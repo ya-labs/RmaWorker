@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { CheckCircle2, Clipboard, FileText, RotateCcw, Send, Server, ShieldAlert } from 'lucide-react';
+import { CheckCircle2, Clipboard, FileText, RotateCcw, Send, ShieldAlert } from 'lucide-react';
 import './styles.css';
 
 type ApiResult = {
@@ -148,11 +148,6 @@ function App() {
             <span>{statusLabel(response.status)}</span>
           </div>
         </header>
-
-        <div className="backend-strip">
-          <Server size={18} />
-          <span>Backend esperado em http://localhost:5000 usando Ollama, UNO e regras do RmaWorker.</span>
-        </div>
 
         <div className="chat-layout">
           <section className="composer" aria-label="Entrada do e-mail">
