@@ -116,4 +116,4 @@ app.MapPost("/api/rma/analyze", async (
     return Results.Ok(response);
 });
 
-app.Run("http://localhost:5000");
+app.Run();

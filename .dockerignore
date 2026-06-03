@@ -1,0 +1,15 @@
+**/bin/
+**/obj/
+.git/
+.github/
+.vs/
+.vscode/
+artifacts/
+RmaChatbot/node_modules/
+RmaChatbot/dist/
+RmaWorker/credentials.json
+RmaWorker/token.json/
+RmaWorker/temp/
+**/*.user
+**/*.suo
+**/*.log
