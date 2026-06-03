@@ -23,7 +23,10 @@ builder.Services.AddCors(options =>
     options.AddPolicy("RmaChatbot", policy =>
     {
         policy
-            .WithOrigins("http://localhost:5173", "http://127.0.0.1:5173")
+            .SetIsOriginAllowed(origin =>
+                new Uri(origin).Host.EndsWith("github.io", StringComparison.OrdinalIgnoreCase)
+                || origin == "http://localhost:5173"
+                || origin == "http://127.0.0.1:5173")
             .AllowAnyHeader()
             .AllowAnyMethod();
     });

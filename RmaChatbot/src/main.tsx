@@ -22,6 +22,8 @@ type ApiResponse = {
   results: ApiResult[];
 };
 
+type HealthStatus = 'checking' | 'online' | 'offline';
+
 const initialEmail = `Boa tarde!
 
 Segue solicitação de RMA.
@@ -74,9 +76,39 @@ function App() {
   const [copied, setCopied] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [healthStatus, setHealthStatus] = React.useState<HealthStatus>('checking');
 
   const extraction = firstExtraction(response);
   const isReady = response.status === 'APTO';
+
+  React.useEffect(() => {
+    let active = true;
+
+    async function checkHealth() {
+      try {
+        const healthResponse = await fetch(`${apiBaseUrl}/api/health`, {
+          cache: 'no-store',
+        });
+
+        if (active) {
+          setHealthStatus(healthResponse.ok ? 'online' : 'offline');
+        }
+      } catch {
+        if (active) {
+          setHealthStatus('offline');
+        }
+      }
+    }
+
+    setHealthStatus('checking');
+    void checkHealth();
+    const intervalId = window.setInterval(checkHealth, 15000);
+
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+    };
+  }, []);
 
   async function handleAnalyze() {
     setLoading(true);
@@ -107,7 +139,7 @@ function App() {
       setResponse({
         ...emptyResponse,
         status: 'ERRO',
-        responseBody: 'Não foi possível gerar a resposta. Verifique se o backend está rodando em http://localhost:5000, se o Vite foi reiniciado após a configuração do proxy e se o Ollama está disponível.',
+        responseBody: 'Não foi possível gerar a resposta. Verifique se a API pública está acessível, se a URL configurada no GitHub Pages usa HTTPS e se o Ollama está disponível.',
       });
     } finally {
       setLoading(false);
@@ -148,6 +180,13 @@ function App() {
             <span>{statusLabel(response.status)}</span>
           </div>
         </header>
+
+        <div className={`api-health health-${healthStatus}`}>
+          <span className="health-dot" aria-hidden="true" />
+          <span>
+            API {healthStatus === 'checking' ? 'verificando' : healthStatus === 'online' ? 'online' : 'offline'}
+          </span>
+        </div>
 
         <div className="chat-layout">
           <section className="composer" aria-label="Entrada do e-mail">

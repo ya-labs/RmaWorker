@@ -262,6 +262,8 @@ public sealed class EmailResponseService : IEmailResponseService
         {
             "PRECISA_TESTES" => "precisamos dos testes/evidencias complementares antes de prosseguir com a orientacao de nota",
             "PRECISA_DETALHES" => "a descricao do defeito esta muito generica; precisamos de mais detalhes antes de prosseguir",
+            "UNO_TIMEOUT" => "a consulta ao UNO demorou mais que o esperado; tente novamente em alguns instantes",
+            "UNO_INDISPONIVEL" => "nao foi possivel consultar o UNO no momento; tente novamente em alguns instantes",
             _ => result.Reason ?? "nao apto para processamento"
         };
     }

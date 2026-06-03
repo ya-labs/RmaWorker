@@ -1,0 +1,40 @@
+name: Build RMA Backend
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "RmaWorker/**"
+      - "RMIA.sln"
+      - ".github/workflows/build-rma-backend.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore RmaWorker/RmaWorker.csproj
+
+      - name: Build
+        run: dotnet build RmaWorker/RmaWorker.csproj --configuration Release --no-restore
+
+      - name: Publish
+        run: dotnet publish RmaWorker/RmaWorker.csproj --configuration Release --no-build --output publish/rma-backend
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rma-backend
+          path: publish/rma-backend

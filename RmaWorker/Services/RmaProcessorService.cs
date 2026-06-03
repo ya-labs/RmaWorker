@@ -1,4 +1,6 @@
 using System.Text.Json;
+using Microsoft.Extensions.Options;
+using RmaWorker.Configuration;
 using RmaWorker.DTOs;
 using RmaWorker.Interfaces;
 
@@ -18,6 +20,7 @@ public sealed class RmaProcessorService : IRmaProcessorService
     private readonly IEmailResponseService _emailResponseService;
     private readonly IEmailBodyCleaner _emailBodyCleaner;
     private readonly IRmaTechnicalClassifier _technicalClassifier;
+    private readonly InvoiceOptions _invoiceOptions;
     private readonly ILogger<RmaProcessorService> _logger;
 
     public RmaProcessorService(
@@ -28,6 +31,7 @@ public sealed class RmaProcessorService : IRmaProcessorService
         IEmailResponseService emailResponseService,
         IEmailBodyCleaner emailBodyCleaner,
         IRmaTechnicalClassifier technicalClassifier,
+        IOptions<InvoiceOptions> invoiceOptions,
         ILogger<RmaProcessorService> logger)
     {
         _ollamaService = ollamaService;
@@ -37,6 +41,7 @@ public sealed class RmaProcessorService : IRmaProcessorService
         _emailResponseService = emailResponseService;
         _emailBodyCleaner = emailBodyCleaner;
         _technicalClassifier = technicalClassifier;
+        _invoiceOptions = invoiceOptions.Value;
         _logger = logger;
     }
 
@@ -66,7 +71,12 @@ public sealed class RmaProcessorService : IRmaProcessorService
                 []);
         }
 
+        var startedAt = DateTimeOffset.UtcNow;
         var extractions = await _ollamaService.ExtractRmaDataAsync(currentMessageBody, cancellationToken);
+        _logger.LogInformation(
+            "Extracao IA concluida em {ElapsedMs}ms para o email {MessageId}.",
+            (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds,
+            message.Id);
         var extractionJson = JsonSerializer.Serialize(extractions, JsonOptions);
 
         _logger.LogInformation(
@@ -84,6 +94,11 @@ public sealed class RmaProcessorService : IRmaProcessorService
             cancellationToken.ThrowIfCancellationRequested();
             results.Add(await ProcessExtractionAsync(message.Id, extraction, currentMessageBody, cancellationToken));
         }
+
+        _logger.LogInformation(
+            "Analise completa concluida em {ElapsedMs}ms para o email {MessageId}.",
+            (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds,
+            message.Id);
 
         return _emailResponseService.BuildProcessingResponse(results);
     }
@@ -127,7 +142,47 @@ public sealed class RmaProcessorService : IRmaProcessorService
                 null);
         }
 
-        var serialValidation = await _serialValidationService.ValidateAsync(extraction.Serial!, cancellationToken);
+        var serialStartedAt = DateTimeOffset.UtcNow;
+        SerialValidationResultDto serialValidation;
+        try
+        {
+            serialValidation = await _serialValidationService.ValidateAsync(extraction.Serial!, cancellationToken);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            var reason = $"Timeout ao consultar o UNO para o serial {extraction.Serial}.";
+            LogNotEligible(messageId, reason);
+            return new RmaProcessingResultDto(
+                extraction,
+                "UNO_TIMEOUT",
+                reason,
+                [],
+                null,
+                null,
+                null,
+                false,
+                null);
+        }
+        catch (HttpRequestException ex)
+        {
+            var reason = $"Falha ao consultar o UNO para o serial {extraction.Serial}: {ex.Message}";
+            LogNotEligible(messageId, reason);
+            return new RmaProcessingResultDto(
+                extraction,
+                "UNO_INDISPONIVEL",
+                reason,
+                [],
+                null,
+                null,
+                null,
+                false,
+                null);
+        }
+
+        _logger.LogInformation(
+            "Consulta UNO concluida em {ElapsedMs}ms para serial {Serial}.",
+            (DateTimeOffset.UtcNow - serialStartedAt).TotalMilliseconds,
+            extraction.Serial);
         if (!serialValidation.Exists)
         {
             var reason = $"Serial nao encontrado no UNO: {extraction.Serial}";
@@ -161,13 +216,23 @@ public sealed class RmaProcessorService : IRmaProcessorService
         }
 
         InvoiceDataDto? invoiceData = null;
-        if (!string.IsNullOrWhiteSpace(serialValidation.InvoiceLink)
+        if (_invoiceOptions.EnablePdfExtraction
+            && !string.IsNullOrWhiteSpace(serialValidation.InvoiceLink)
             && !string.IsNullOrWhiteSpace(serialValidation.ProductCode))
         {
+            var invoiceStartedAt = DateTimeOffset.UtcNow;
             invoiceData = await _invoicePdfService.ExtractAsync(
                 serialValidation.InvoiceLink,
                 serialValidation.ProductCode,
                 cancellationToken);
+            _logger.LogInformation(
+                "Extracao PDF concluida em {ElapsedMs}ms para serial {Serial}.",
+                (DateTimeOffset.UtcNow - invoiceStartedAt).TotalMilliseconds,
+                extraction.Serial);
+        }
+        else if (!_invoiceOptions.EnablePdfExtraction)
+        {
+            _logger.LogInformation("Extracao de PDF desabilitada por configuracao.");
         }
 
         var warrantyUntil = serialValidation.InvoiceIssuedAt?.AddYears(1);
