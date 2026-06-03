@@ -1,0 +1,16 @@
+bin/
+obj/
+**/bin/
+**/obj/
+
+.vs/
+.vscode/
+*.user
+*.suo
+
+credentials.json
+token.json/
+*.log
+temp/
+**/temp/
+artifacts/
