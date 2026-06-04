@@ -36,7 +36,12 @@ public sealed class OllamaService : IOllamaService
             BuildPrompt(emailContent),
             Stream: false,
             Format: "json",
-            Options: new OllamaRequestOptions(_options.Temperature));
+            Options: new OllamaRequestOptions(
+                _options.Temperature,
+                _options.NumThread,
+                _options.NumCtx,
+                _options.NumPredict),
+            KeepAlive: _options.KeepAlive);
 
         var response = await _httpClient.PostAsJsonAsync("/api/generate", request, JsonOptions, cancellationToken);
         response.EnsureSuccessStatusCode();
@@ -553,10 +558,14 @@ public sealed class OllamaService : IOllamaService
         [property: JsonPropertyName("prompt")] string Prompt,
         [property: JsonPropertyName("stream")] bool Stream,
         [property: JsonPropertyName("format")] string Format,
-        [property: JsonPropertyName("options")] OllamaRequestOptions Options);
+        [property: JsonPropertyName("options")] OllamaRequestOptions Options,
+        [property: JsonPropertyName("keep_alive")] string? KeepAlive);
 
     private sealed record OllamaRequestOptions(
-        [property: JsonPropertyName("temperature")] double Temperature);
+        [property: JsonPropertyName("temperature")] double Temperature,
+        [property: JsonPropertyName("num_thread")] int? NumThread,
+        [property: JsonPropertyName("num_ctx")] int? NumCtx,
+        [property: JsonPropertyName("num_predict")] int? NumPredict);
 
     private sealed record OllamaGenerateResponse(
         [property: JsonPropertyName("response")] string? Response,

@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { CheckCircle2, Clipboard, FileText, RotateCcw, Send, ShieldAlert } from 'lucide-react';
+import { CheckCircle2, Clipboard, FileText, Hash, Mail, RotateCcw, Send, ShieldAlert } from 'lucide-react';
 import './styles.css';
 
 type ApiResult = {
@@ -23,6 +23,7 @@ type ApiResponse = {
 };
 
 type HealthStatus = 'checking' | 'online' | 'offline';
+type RequestMode = 'email' | 'serial';
 
 const initialEmail = `Boa tarde!
 
@@ -71,7 +72,9 @@ function plainTextFromHtml(html: string) {
 }
 
 function App() {
+  const [requestMode, setRequestMode] = React.useState<RequestMode>('email');
   const [email, setEmail] = React.useState(initialEmail);
+  const [serial, setSerial] = React.useState('');
   const [response, setResponse] = React.useState<ApiResponse>(emptyResponse);
   const [copied, setCopied] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
@@ -80,6 +83,7 @@ function App() {
 
   const extraction = firstExtraction(response);
   const isReady = response.status === 'APTO';
+  const canSubmit = requestMode === 'email' ? email.trim().length > 0 : serial.trim().length > 0;
 
   React.useEffect(() => {
     let active = true;
@@ -110,21 +114,30 @@ function App() {
     };
   }, []);
 
-  async function handleAnalyze() {
+  async function handleGenerate() {
     setLoading(true);
     setCopied(false);
     setError(null);
 
     try {
-      const apiResponse = await fetch(`${apiBaseUrl}/api/rma/analyze`, {
+      const endpoint = requestMode === 'email'
+        ? '/api/rma/analyze'
+        : '/api/rma/generate-by-serial';
+      const requestBody = requestMode === 'email'
+        ? {
+          emailBody: email,
+          subject: 'Analise manual RMA',
+        }
+        : {
+          serial,
+        };
+
+      const apiResponse = await fetch(`${apiBaseUrl}${endpoint}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          emailBody: email,
-          subject: 'Analise manual RMA',
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       if (!apiResponse.ok) {
@@ -162,6 +175,7 @@ function App() {
 
   function handleReset() {
     setEmail('');
+    setSerial('');
     setResponse(emptyResponse);
     setError(null);
     setCopied(false);
@@ -190,26 +204,64 @@ function App() {
 
         <div className="chat-layout">
           <section className="composer" aria-label="Entrada do e-mail">
+            <div className="mode-switch" role="tablist" aria-label="Modo de geracao">
+              <button
+                className={requestMode === 'email' ? 'mode-button active' : 'mode-button'}
+                type="button"
+                onClick={() => setRequestMode('email')}
+                role="tab"
+                aria-selected={requestMode === 'email'}
+                title="Analisar e-mail recebido"
+              >
+                <Mail size={18} />
+                <span>E-mail recebido</span>
+              </button>
+              <button
+                className={requestMode === 'serial' ? 'mode-button active' : 'mode-button'}
+                type="button"
+                onClick={() => setRequestMode('serial')}
+                role="tab"
+                aria-selected={requestMode === 'serial'}
+                title="Gerar e-mail pelo numero de serie"
+              >
+                <Hash size={18} />
+                <span>Somente serie</span>
+              </button>
+            </div>
             <div className="message incoming">
               <div className="message-header">
-                <FileText size={18} />
-                <span>E-mail recebido</span>
+                {requestMode === 'email' ? <FileText size={18} /> : <Hash size={18} />}
+                <span>{requestMode === 'email' ? 'E-mail recebido' : 'Numero de serie'}</span>
               </div>
-              <textarea
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                spellCheck="false"
-                aria-label="Cole aqui o e-mail recebido"
-              />
+              {requestMode === 'email' ? (
+                <textarea
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  spellCheck="false"
+                  aria-label="Cole aqui o e-mail recebido"
+                />
+              ) : (
+                <div className="serial-panel">
+                  <label htmlFor="serial-input">Serie do equipamento</label>
+                  <input
+                    id="serial-input"
+                    value={serial}
+                    onChange={(event) => setSerial(event.target.value)}
+                    placeholder="0M0200/013D88"
+                    spellCheck="false"
+                    aria-label="Informe o numero de serie"
+                  />
+                </div>
+              )}
             </div>
             <div className="actions">
               <button className="secondary-button" type="button" onClick={handleReset} title="Limpar">
                 <RotateCcw size={18} />
                 <span>Limpar</span>
               </button>
-              <button className="primary-button" type="button" onClick={handleAnalyze} disabled={loading} title="Gerar resposta">
+              <button className="primary-button" type="button" onClick={handleGenerate} disabled={loading || !canSubmit} title="Gerar resposta">
                 <Send size={18} />
-                <span>{loading ? 'Consultando backend' : 'Gerar resposta'}</span>
+                <span>{loading ? 'Consultando backend' : requestMode === 'email' ? 'Gerar resposta' : 'Gerar por serie'}</span>
               </button>
             </div>
           </section>

@@ -9,4 +9,12 @@ public sealed class OllamaOptions
     public string Model { get; init; } = "qwen3:4b";
 
     public double Temperature { get; init; } = 0;
+
+    public int? NumThread { get; init; }
+
+    public int? NumCtx { get; init; }
+
+    public int? NumPredict { get; init; }
+
+    public string? KeepAlive { get; init; }
 }

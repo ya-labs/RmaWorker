@@ -86,6 +86,15 @@ public sealed class EmailResponseService : IEmailResponseService
         if (results.Count == 1)
         {
             var result = results.First();
+            if (result.Status is "UNO_TIMEOUT" or "UNO_INDISPONIVEL")
+            {
+                return new RmaAssistantResponseDto(
+                    result.Status,
+                    false,
+                    result.Reason ?? GetDisplayReason(result),
+                    results);
+            }
+
             if (result.MissingFields.Count > 0)
             {
                 return new RmaAssistantResponseDto(
@@ -196,15 +205,15 @@ public sealed class EmailResponseService : IEmailResponseService
             </div>
             """);
         builder.AppendLine("""<span style="color: #ff0000; font-weight: 700;">DADOS DO PRODUTO/SERVICO:</span><br>""");
-        builder.AppendLine($"NCM: {Html(result.Invoice?.Ncm)}<br>");
+        builder.AppendLine($"NCM: {Html(ValueOrInvoiceFallback(result.Invoice?.Ncm))}<br>");
         builder.AppendLine("CFOP: 5915 - para Empresas dentro do Estado de Minas Gerais<br>");
         builder.AppendLine("CFOP: 6915 - para Empresas fora do Estado de Minas Gerais<br>");
         builder.AppendLine($"Descricao do produto: {Html(result.SerialValidation?.ProductDescription)}<br>");
-        builder.AppendLine($"Valor unitario: {Html(FormatCurrency(result.Invoice?.UnitValue))}<br><br>");
+        builder.AppendLine($"Valor unitario: {Html(ValueOrInvoiceFallback(FormatCurrency(result.Invoice?.UnitValue)))}<br><br>");
         builder.AppendLine("""<span style="color: #ff0000; font-weight: 700;">Informacoes que devem constar no campo Dados Adicionais:</span><br>""");
         builder.AppendLine($"<strong>N SERIE EQUIPAMENTO:</strong> {Html(result.SerialValidation?.Serial)}<br>");
-        builder.AppendLine($"<strong>N NOTA DE VENDA:</strong> {Html(result.Invoice?.Number)}<br>");
-        builder.AppendLine($"<strong>DATA DA NOTA:</strong> {Html(FormatDate(result.Invoice?.IssuedAt))}<br><br>");
+        builder.AppendLine($"<strong>N NOTA DE VENDA:</strong> {Html(ValueOrInvoiceFallback(result.Invoice?.Number))}<br>");
+        builder.AppendLine($"<strong>DATA DA NOTA:</strong> {Html(ValueOrInvoiceFallback(FormatDate(result.Invoice?.IssuedAt ?? result.SerialValidation?.InvoiceIssuedAt)))}<br><br>");
     }
 
     private static void AppendPendingResultHtml(StringBuilder builder, RmaProcessingResultDto result)
@@ -289,5 +298,12 @@ public sealed class EmailResponseService : IEmailResponseService
     private static string FormatDate(DateOnly? value)
     {
         return value.HasValue ? value.Value.ToString("dd/MM/yyyy") : string.Empty;
+    }
+
+    private static string ValueOrInvoiceFallback(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value)
+            ? "preencher conforme nota fiscal de venda"
+            : value;
     }
 }

@@ -51,6 +51,30 @@ public sealed class RmaProcessorService : IRmaProcessorService
         await _emailResponseService.ReplyProcessingResultsAsync(message, response.Results, cancellationToken);
     }
 
+    public async Task<RmaAssistantResponseDto> GenerateFromSerialAsync(string serial, CancellationToken cancellationToken)
+    {
+        var normalizedSerial = serial.Trim();
+        var extraction = new OllamaRmaExtractionDto(
+            normalizedSerial,
+            null,
+            null,
+            null,
+            null,
+            false,
+            false,
+            true,
+            true,
+            true);
+
+        var result = await BuildEligibleResultFromSerialAsync(
+            $"serial-{Guid.NewGuid():N}",
+            extraction,
+            null,
+            cancellationToken);
+
+        return _emailResponseService.BuildProcessingResponse([result]);
+    }
+
     public async Task<RmaAssistantResponseDto> AnalyzeAsync(EmailMessageDto message, CancellationToken cancellationToken)
     {
         PrintEmail(message);
@@ -142,6 +166,15 @@ public sealed class RmaProcessorService : IRmaProcessorService
                 null);
         }
 
+        return await BuildEligibleResultFromSerialAsync(messageId, extraction, currentMessageBody, cancellationToken);
+    }
+
+    private async Task<RmaProcessingResultDto> BuildEligibleResultFromSerialAsync(
+        string messageId,
+        OllamaRmaExtractionDto extraction,
+        string? currentMessageBody,
+        CancellationToken cancellationToken)
+    {
         var serialStartedAt = DateTimeOffset.UtcNow;
         SerialValidationResultDto serialValidation;
         try
@@ -199,8 +232,19 @@ public sealed class RmaProcessorService : IRmaProcessorService
                 null);
         }
 
-        var technicalClassification = _technicalClassifier.Classify(extraction, currentMessageBody);
-        if (technicalClassification.Status != "APTO_PARA_ORIENTACAO_NF")
+        var responseExtraction = extraction with
+        {
+            Cnpj = string.IsNullOrWhiteSpace(extraction.Cnpj) ? serialValidation.Cnpj : extraction.Cnpj,
+            Produto = string.IsNullOrWhiteSpace(extraction.Produto) ? serialValidation.ProductDescription : extraction.Produto
+        };
+
+        var technicalClassification = currentMessageBody is null
+            ? new RmaTechnicalClassificationDto(
+                "APTO_PARA_ORIENTACAO_NF",
+                "Fluxo manual por serial sem validacao tecnica.",
+                [])
+            : _technicalClassifier.Classify(extraction, currentMessageBody);
+        if (currentMessageBody is not null && technicalClassification.Status != "APTO_PARA_ORIENTACAO_NF")
         {
             LogNotEligible(messageId, technicalClassification.Reason);
             return new RmaProcessingResultDto(
@@ -264,7 +308,7 @@ public sealed class RmaProcessorService : IRmaProcessorService
         Console.WriteLine("-----------------------------------");
 
         return new RmaProcessingResultDto(
-            extraction,
+            responseExtraction,
             "APTO",
             null,
             [],
