@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Options;
 using RmaWorker.Configuration;
 using RmaWorker.DTOs;
@@ -8,6 +9,8 @@ namespace RmaWorker.Services;
 
 public sealed class RmaProcessorService : IRmaProcessorService
 {
+    private static readonly Regex SerialSeparatorRegex = new(@"[\s,;]+", RegexOptions.Compiled);
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = false
@@ -51,28 +54,38 @@ public sealed class RmaProcessorService : IRmaProcessorService
         await _emailResponseService.ReplyProcessingResultsAsync(message, response.Results, cancellationToken);
     }
 
-    public async Task<RmaAssistantResponseDto> GenerateFromSerialAsync(string serial, CancellationToken cancellationToken)
+    public async Task<RmaAssistantResponseDto> GenerateFromSerialAsync(
+        string? serial,
+        IReadOnlyCollection<string>? serials,
+        CancellationToken cancellationToken)
     {
-        var normalizedSerial = serial.Trim();
-        var extraction = new OllamaRmaExtractionDto(
-            normalizedSerial,
-            null,
-            null,
-            null,
-            null,
-            false,
-            false,
-            true,
-            true,
-            true);
+        var normalizedSerials = NormalizeSerials(serial, serials);
+        var results = new List<RmaProcessingResultDto>();
 
-        var result = await BuildEligibleResultFromSerialAsync(
-            $"serial-{Guid.NewGuid():N}",
-            extraction,
-            null,
-            cancellationToken);
+        foreach (var normalizedSerial in normalizedSerials)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
 
-        return _emailResponseService.BuildProcessingResponse([result]);
+            var extraction = new OllamaRmaExtractionDto(
+                normalizedSerial,
+                null,
+                null,
+                null,
+                null,
+                false,
+                false,
+                true,
+                true,
+                true);
+
+            results.Add(await BuildEligibleResultFromSerialAsync(
+                $"serial-{Guid.NewGuid():N}",
+                extraction,
+                null,
+                cancellationToken));
+        }
+
+        return _emailResponseService.BuildProcessingResponse(results);
     }
 
     public async Task<RmaAssistantResponseDto> AnalyzeAsync(EmailMessageDto message, CancellationToken cancellationToken)
@@ -339,6 +352,34 @@ public sealed class RmaProcessorService : IRmaProcessorService
         }
 
         return missingFields;
+    }
+
+    private static IReadOnlyCollection<string> NormalizeSerials(
+        string? serial,
+        IReadOnlyCollection<string>? serials)
+    {
+        var values = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(serial))
+        {
+            values.AddRange(SplitSerialText(serial));
+        }
+
+        foreach (var item in serials ?? [])
+        {
+            values.AddRange(SplitSerialText(item));
+        }
+
+        return values
+            .Select(value => value.Trim())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static IEnumerable<string> SplitSerialText(string value)
+    {
+        return SerialSeparatorRegex.Split(value);
     }
 
     private void LogNotEligible(string messageId, string reason)

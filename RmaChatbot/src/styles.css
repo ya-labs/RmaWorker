@@ -238,19 +238,29 @@ textarea {
   font-weight: 800;
 }
 
-.serial-panel input {
+.serial-panel input,
+.serial-panel textarea {
   width: 100%;
-  min-height: 48px;
   border: 1px solid #cbd5df;
   border-radius: 8px;
-  padding: 0 14px;
+  padding: 12px 14px;
   color: #172033;
   background: #ffffff;
   font-weight: 800;
   outline: 0;
 }
 
-.serial-panel input:focus {
+.serial-panel input {
+  min-height: 48px;
+}
+
+.serial-panel textarea {
+  min-height: 180px;
+  resize: vertical;
+}
+
+.serial-panel input:focus,
+.serial-panel textarea:focus {
   border-color: #0f766e;
   box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
 }

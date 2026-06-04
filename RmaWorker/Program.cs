@@ -124,12 +124,13 @@ app.MapPost("/api/rma/generate-by-serial", async (
     IRmaProcessorService processor,
     CancellationToken cancellationToken) =>
 {
-    if (string.IsNullOrWhiteSpace(request.Serial))
+    if (string.IsNullOrWhiteSpace(request.Serial)
+        && (request.Serials is null || request.Serials.Count == 0))
     {
-        return Results.BadRequest(new { error = "Informe o numero de serie para gerar o e-mail." });
+        return Results.BadRequest(new { error = "Informe pelo menos um numero de serie para gerar o e-mail." });
     }
 
-    var response = await processor.GenerateFromSerialAsync(request.Serial, cancellationToken);
+    var response = await processor.GenerateFromSerialAsync(request.Serial, request.Serials, cancellationToken);
     return Results.Ok(response);
 });
 

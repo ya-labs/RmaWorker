@@ -65,6 +65,22 @@ function firstExtraction(response: ApiResponse) {
   return response.results[0]?.extraction;
 }
 
+function serialSummary(response: ApiResponse) {
+  const serials = response.results
+    .map((result) => result.extraction.serial)
+    .filter((serial): serial is string => Boolean(serial));
+
+  if (serials.length === 0) {
+    return 'NÃ£o identificado';
+  }
+
+  if (serials.length === 1) {
+    return serials[0];
+  }
+
+  return `${serials.length} seriais`;
+}
+
 function plainTextFromHtml(html: string) {
   const element = document.createElement('div');
   element.innerHTML = html;
@@ -81,7 +97,9 @@ function App() {
   const [error, setError] = React.useState<string | null>(null);
   const [healthStatus, setHealthStatus] = React.useState<HealthStatus>('checking');
 
-  const extraction = firstExtraction(response);
+  const extraction = response.results.length > 1
+    ? { ...firstExtraction(response), serial: serialSummary(response) }
+    : firstExtraction(response);
   const isReady = response.status === 'APTO';
   const canSubmit = requestMode === 'email' ? email.trim().length > 0 : serial.trim().length > 0;
 
@@ -129,7 +147,10 @@ function App() {
           subject: 'Analise manual RMA',
         }
         : {
-          serial,
+          serials: serial
+            .split(/[\n,;]+/)
+            .map((value) => value.trim())
+            .filter(Boolean),
         };
 
       const apiResponse = await fetch(`${apiBaseUrl}${endpoint}`, {
@@ -242,14 +263,14 @@ function App() {
                 />
               ) : (
                 <div className="serial-panel">
-                  <label htmlFor="serial-input">Serie do equipamento</label>
-                  <input
+                  <label htmlFor="serial-input">Series dos equipamentos</label>
+                  <textarea
                     id="serial-input"
                     value={serial}
                     onChange={(event) => setSerial(event.target.value)}
-                    placeholder="0M0200/013D88"
+                    placeholder={`0M0200/013D88\n0X0200/004245`}
                     spellCheck="false"
-                    aria-label="Informe o numero de serie"
+                    aria-label="Informe um ou mais numeros de serie"
                   />
                 </div>
               )}
