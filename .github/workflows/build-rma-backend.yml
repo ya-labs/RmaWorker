@@ -1,4 +1,4 @@
-name: Build RMA Backend
+name: Deploy RMA Backend
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ on:
       - ".github/workflows/build-rma-backend.yml"
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
@@ -24,17 +24,24 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
-      - name: Restore
-        run: dotnet restore RmaWorker/RmaWorker.csproj
-
-      - name: Build
-        run: dotnet build RmaWorker/RmaWorker.csproj --configuration Release --no-restore
-
       - name: Publish
-        run: dotnet publish RmaWorker/RmaWorker.csproj --configuration Release --no-build --output publish/rma-backend
+        run: dotnet publish RmaWorker/RmaWorker.csproj --configuration Release --runtime linux-x64 --self-contained false -p:UseAppHost=false --output publish/rma-backend
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: rma-backend
-          path: publish/rma-backend
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.RMA_VM_SSH_KEY }}" > ~/.ssh/rma_vm_key
+          chmod 600 ~/.ssh/rma_vm_key
+          ssh-keyscan -H "${{ secrets.RMA_VM_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Upload backend
+        run: |
+          rsync -az --delete -e "ssh -i ~/.ssh/rma_vm_key" publish/rma-backend/ ${{ secrets.RMA_VM_USER }}@${{ secrets.RMA_VM_HOST }}:/home/azureuser/rma-backend/
+
+      - name: Restart service
+        run: |
+          ssh -i ~/.ssh/rma_vm_key ${{ secrets.RMA_VM_USER }}@${{ secrets.RMA_VM_HOST }} "sudo systemctl restart rma-worker"
+
+      - name: Health check
+        run: |
+          curl --fail --retry 5 --retry-delay 3 https://20-59-116-168.sslip.io/api/health
