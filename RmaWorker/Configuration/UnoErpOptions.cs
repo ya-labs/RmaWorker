@@ -10,5 +10,5 @@ public sealed class UnoErpOptions
 
     public string Password { get; set; } = string.Empty;
 
-    public int TimeoutSeconds { get; set; } = 120;
+    public int TimeoutSeconds { get; set; } = 300;
 }

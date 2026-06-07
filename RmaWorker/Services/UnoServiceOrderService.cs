@@ -447,9 +447,17 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
 
     private static async Task<string> GetStringAsync(HttpClient client, string url, CancellationToken cancellationToken)
     {
-        using var response = await client.GetAsync(url, cancellationToken);
-        await EnsureUnoSuccessAsync(response, $"GET {UrlLabel(url)}", cancellationToken);
-        return await response.Content.ReadAsStringAsync(cancellationToken);
+        var operation = $"GET {UrlLabel(url)}";
+        try
+        {
+            using var response = await client.GetAsync(url, cancellationToken);
+            await EnsureUnoSuccessAsync(response, operation, cancellationToken);
+            return await response.Content.ReadAsStringAsync(cancellationToken);
+        }
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new InvalidOperationException($"Timeout no UNO durante {operation}.", ex);
+        }
     }
 
     private static async Task<string> PostStringAsync(
@@ -458,10 +466,18 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         IEnumerable<KeyValuePair<string, string>> form,
         CancellationToken cancellationToken)
     {
-        using var content = new FormUrlEncodedContent(form);
-        using var response = await client.PostAsync(url, content, cancellationToken);
-        await EnsureUnoSuccessAsync(response, $"POST {UrlLabel(url)}", cancellationToken);
-        return await response.Content.ReadAsStringAsync(cancellationToken);
+        var operation = $"POST {UrlLabel(url)}";
+        try
+        {
+            using var content = new FormUrlEncodedContent(form);
+            using var response = await client.PostAsync(url, content, cancellationToken);
+            await EnsureUnoSuccessAsync(response, operation, cancellationToken);
+            return await response.Content.ReadAsStringAsync(cancellationToken);
+        }
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new InvalidOperationException($"Timeout no UNO durante {operation}.", ex);
+        }
     }
 
     private static async Task EnsureUnoSuccessAsync(
