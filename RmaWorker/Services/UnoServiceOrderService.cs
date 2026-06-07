@@ -23,6 +23,10 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         @"<td[^>]*>\s*&nbsp;(?<code>\d+)</td>\s*<td[^>]*>\s*&nbsp;(?<name>.*?)</td>\s*<td[^>]*>\s*&nbsp;(?<cnpj>[\d./-]+)</td>",
         RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
 
+    private static readonly Regex CustomerCopyRegex = new(
+        @"copiar\s*\(\s*['""]?(?<code>\d{2,})['""]?\s*,",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private static readonly Regex ExistingItemRegex = new(
         @"(?:carregarItem|copiar)\s*\(\s*'?(?<code>\d+)'?",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -193,15 +197,33 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
 
         var html = await page.ContentAsync();
         var match = CustomerRowRegex.Match(html);
-        if (!match.Success)
+        if (match.Success)
         {
-            return null;
+            return new CustomerLookup(
+                WebUtility.HtmlDecode(match.Groups["code"].Value.Trim()),
+                CleanHtml(match.Groups["name"].Value),
+                WebUtility.HtmlDecode(match.Groups["cnpj"].Value.Trim()));
         }
 
-        return new CustomerLookup(
-            WebUtility.HtmlDecode(match.Groups["code"].Value.Trim()),
-            CleanHtml(match.Groups["name"].Value),
-            WebUtility.HtmlDecode(match.Groups["cnpj"].Value.Trim()));
+        var normalizedCnpj = Digits(cnpj);
+        var pageContainsCnpj = Digits(html).Contains(normalizedCnpj, StringComparison.Ordinal);
+        var copyMatch = CustomerCopyRegex.Match(html);
+        if (pageContainsCnpj && copyMatch.Success)
+        {
+            return new CustomerLookup(
+                copyMatch.Groups["code"].Value.Trim(),
+                "Cliente UNO",
+                normalizedCnpj);
+        }
+
+        var artifact = await SaveFailureArtifactsAsync(page, "uno-customer-not-found");
+        _logger.LogWarning(
+            "Cliente nao reconhecido na busca do UNO. CNPJ: {Cnpj}. Url: {Url}. Artefato: {Artifact}",
+            normalizedCnpj,
+            page.Url,
+            artifact);
+
+        return null;
     }
 
     private async Task<RmaServiceOrderItemResultDto> OpenItemServiceOrderAsync(
