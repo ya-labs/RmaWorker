@@ -181,6 +181,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
 
         var html = await page.ContentAsync();
+        EnsureUnoSessionIsActive(html);
         if (!html.Contains("UNO ERP", StringComparison.OrdinalIgnoreCase)
             && !page.Url.Contains("desktop", StringComparison.OrdinalIgnoreCase))
         {
@@ -196,6 +197,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
 
         var html = await page.ContentAsync();
+        EnsureUnoSessionIsActive(html);
         var match = CustomerRowRegex.Match(html);
         if (match.Success)
         {
@@ -543,6 +545,18 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             RegexOptions.IgnoreCase | RegexOptions.Singleline);
 
         return match.Success ? CleanHtml(match.Groups[1].Value) : string.Empty;
+    }
+
+    private static void EnsureUnoSessionIsActive(string html)
+    {
+        if (html.Contains("Sessão Encerrada", StringComparison.OrdinalIgnoreCase)
+            || html.Contains("Sessao Encerrada", StringComparison.OrdinalIgnoreCase)
+            || html.Contains("login foi utilizado em outra estação", StringComparison.OrdinalIgnoreCase)
+            || html.Contains("login foi utilizado em outra estacao", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "Sessao do UNO encerrada porque o usuario configurado foi utilizado em outra estacao. Feche outros acessos do usuario UNO ou configure um usuario dedicado para a automacao.");
+        }
     }
 
     private static string CleanHtml(string value)
