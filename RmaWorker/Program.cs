@@ -24,11 +24,22 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("RmaChatbot", policy =>
     {
+        var allowedOrigins = builder.Configuration
+            .GetSection("Cors:AllowedOrigins")
+            .Get<string[]>()
+            ?? ["*"];
+
+        if (allowedOrigins.Any(origin => origin == "*"))
+        {
+            policy.AllowAnyOrigin();
+        }
+        else
+        {
+            policy.SetIsOriginAllowed(origin =>
+                IsAllowedOrigin(origin, allowedOrigins));
+        }
+
         policy
-            .SetIsOriginAllowed(origin =>
-                new Uri(origin).Host.EndsWith("github.io", StringComparison.OrdinalIgnoreCase)
-                || origin == "http://localhost:5173"
-                || origin == "http://127.0.0.1:5173")
             .AllowAnyHeader()
             .AllowAnyMethod();
     });
@@ -145,10 +156,47 @@ app.MapPost("/api/rma/generate-by-serial", async (
 app.MapPost("/api/rma/service-order/open", async (
     RmaServiceOrderRequestDto request,
     IUnoServiceOrderService serviceOrderService,
+    ILogger<Program> logger,
     CancellationToken cancellationToken) =>
 {
-    var response = await serviceOrderService.OpenAsync(request, cancellationToken);
-    return Results.Ok(response);
+    try
+    {
+        var response = await serviceOrderService.OpenAsync(request, cancellationToken);
+        return Results.Ok(response);
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Falha ao abrir O.S no UNO.");
+        return Results.Json(
+            new
+            {
+                status = "failed",
+                message = $"Falha ao abrir O.S no UNO: {ex.Message}"
+            },
+            statusCode: StatusCodes.Status500InternalServerError);
+    }
 });
 
 app.Run();
+
+static bool IsAllowedOrigin(string origin, IReadOnlyCollection<string> allowedOrigins)
+{
+    if (string.IsNullOrWhiteSpace(origin))
+    {
+        return false;
+    }
+
+    if (allowedOrigins.Contains(origin, StringComparer.OrdinalIgnoreCase))
+    {
+        return true;
+    }
+
+    if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri))
+    {
+        return false;
+    }
+
+    return uri.Host.EndsWith("github.io", StringComparison.OrdinalIgnoreCase)
+        || origin.Equals("http://localhost:5173", StringComparison.OrdinalIgnoreCase)
+        || origin.Equals("http://127.0.0.1:5173", StringComparison.OrdinalIgnoreCase);
+}
