@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Options;
+using Microsoft.Playwright;
 using RmaWorker.Configuration;
 using RmaWorker.DTOs;
 using RmaWorker.Interfaces;
@@ -16,20 +17,18 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
     private const int AttendantCode = 906;
     private const int Quantity = 1;
 
-    private static readonly Regex TokenRegex = new(
-        "name=\"org\\.apache\\.struts\\.taglib\\.html\\.TOKEN\"\\s+value=\"([^\"]+)\"",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly SemaphoreSlim BrowserLock = new(1, 1);
 
     private static readonly Regex CustomerRowRegex = new(
         @"<td[^>]*>\s*&nbsp;(?<code>\d+)</td>\s*<td[^>]*>\s*&nbsp;(?<name>.*?)</td>\s*<td[^>]*>\s*&nbsp;(?<cnpj>[\d./-]+)</td>",
         RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
 
-    private static readonly Regex CreatedItemRegex = new(
-        "name=\"codItem\"[^>]*value=\"(?<code>\\d+)\"",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
     private static readonly Regex ExistingItemRegex = new(
         @"(?:carregarItem|copiar)\s*\(\s*'?(?<code>\d+)'?",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex CreatedItemRegex = new(
+        "name=\"codItem\"[^>]*value=\"(?<code>\\d+)\"",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private readonly ISerialValidationService _serialValidationService;
@@ -68,7 +67,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             .ToList();
         if (missingDefectItems.Count > 0)
         {
-            var results = missingDefectItems
+            var missingResults = missingDefectItems
                 .Select(item => BuildResult(
                     item.Serial,
                     request.Cnpj,
@@ -87,7 +86,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             return new RmaServiceOrderResponseDto(
                 "DEFEITO_AUSENTE",
                 "Informe o defeito relatado antes de abrir a O.S no UNO.",
-                results);
+                missingResults);
         }
 
         if (string.IsNullOrWhiteSpace(_options.Login) || string.IsNullOrWhiteSpace(_options.Password))
@@ -98,13 +97,44 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
                 []);
         }
 
-        using var client = CreateClient();
+        await BrowserLock.WaitAsync(cancellationToken);
+        try
+        {
+            return await OpenWithBrowserAsync(request, cancellationToken);
+        }
+        finally
+        {
+            BrowserLock.Release();
+        }
+    }
+
+    private async Task<RmaServiceOrderResponseDto> OpenWithBrowserAsync(
+        RmaServiceOrderRequestDto request,
+        CancellationToken cancellationToken)
+    {
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+        {
+            Headless = _options.BrowserHeadless,
+            SlowMo = _options.BrowserSlowMoMs,
+            Args = ["--no-sandbox", "--disable-dev-shm-usage"]
+        });
+
+        var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            IgnoreHTTPSErrors = true,
+            ViewportSize = new ViewportSize { Width = 1366, Height = 900 }
+        });
+
+        var page = await context.NewPageAsync();
+        page.SetDefaultTimeout(_options.TimeoutSeconds * 1000);
+        page.SetDefaultNavigationTimeout(_options.TimeoutSeconds * 1000);
 
         try
         {
-            await LoginAsync(client, cancellationToken);
+            await LoginAsync(page);
 
-            var customer = await FindCustomerAsync(client, request.Cnpj, cancellationToken);
+            var customer = await FindCustomerAsync(page, request.Cnpj!);
             if (customer is null)
             {
                 return new RmaServiceOrderResponseDto(
@@ -117,7 +147,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             foreach (var item in request.Items)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                results.Add(await OpenItemServiceOrderAsync(client, customer, request.Cnpj, item, cancellationToken));
+                results.Add(await OpenItemServiceOrderAsync(page, customer, request.Cnpj!, item));
             }
 
             var failed = results.Where(result => result.Status != "OS_ABERTA").ToList();
@@ -125,79 +155,44 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
                 ? new RmaServiceOrderResponseDto("OS_ABERTA", "O.S aberta no UNO.", results)
                 : new RmaServiceOrderResponseDto("OS_PARCIAL", "Uma ou mais O.S nao foram abertas no UNO.", results);
         }
-        catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or TaskCanceledException)
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException or InvalidOperationException)
         {
-            _logger.LogError(ex, "Falha ao abrir O.S no UNO.");
-            return new RmaServiceOrderResponseDto("UNO_ERRO", $"Falha ao abrir O.S no UNO: {ex.Message}", []);
+            var artifact = await SaveFailureArtifactsAsync(page, "uno-open-os-failure");
+            _logger.LogError(ex, "Falha ao abrir O.S no UNO via navegador. Artefato: {Artifact}", artifact);
+            var suffix = string.IsNullOrWhiteSpace(artifact) ? string.Empty : $" Artefato: {artifact}";
+            return new RmaServiceOrderResponseDto("UNO_ERRO", $"Falha ao abrir O.S no UNO: {ex.Message}{suffix}", []);
+        }
+        finally
+        {
+            await context.CloseAsync();
         }
     }
 
-    private HttpClient CreateClient()
+    private async Task LoginAsync(IPage page)
     {
-        var cookies = new CookieContainer();
-        var handler = new HttpClientHandler
-        {
-            CookieContainer = cookies,
-            UseCookies = true,
-            AutomaticDecompression = DecompressionMethods.All
-        };
+        await page.GotoAsync(AbsoluteUrl(string.Empty), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await FillByNameAsync(page, "login", _options.Login);
+        await FillByNameAsync(page, "senha", _options.Password);
+        await SubmitCurrentFormAsync(page, "sgw0001.do?method=validarLogin");
+        await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
 
-        return new HttpClient(handler)
-        {
-            BaseAddress = new Uri(EnsureTrailingSlash(_options.BaseUrl)),
-            Timeout = TimeSpan.FromSeconds(_options.TimeoutSeconds)
-        };
-    }
-
-    private async Task LoginAsync(HttpClient client, CancellationToken cancellationToken)
-    {
-        var loginPage = await GetStringAsync(client, string.Empty, cancellationToken);
-        var token = ExtractToken(loginPage);
-
-        var loginForm = new List<KeyValuePair<string, string>>
-        {
-            Token(token),
-            Token(token),
-            new("email", string.Empty),
-            new("login", _options.Login),
-            new("senha", _options.Password)
-        };
-
-        var result = await PostStringAsync(client, "sgw0001.do?method=validarLogin", loginForm, cancellationToken);
-        if (!result.Contains("desktop", StringComparison.OrdinalIgnoreCase)
-            && !result.Contains("UNO ERP", StringComparison.OrdinalIgnoreCase))
+        var html = await page.ContentAsync();
+        if (!html.Contains("UNO ERP", StringComparison.OrdinalIgnoreCase)
+            && !page.Url.Contains("desktop", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException("Login no UNO nao retornou a tela esperada.");
         }
-
-        await GetStringAsync(client, "desktop.do?method=preparar", cancellationToken);
     }
 
-    private async Task<CustomerLookup?> FindCustomerAsync(HttpClient client, string cnpj, CancellationToken cancellationToken)
+    private async Task<CustomerLookup?> FindCustomerAsync(IPage page, string cnpj)
     {
-        var page = await GetStringAsync(client, "cdq0101.do?method=prepListar", cancellationToken);
-        var token = ExtractToken(page);
-        var body = await PostStringAsync(client, "cdq0101.do?method=listar", new[]
-        {
-            Token(token),
-            Token(token),
-            new KeyValuePair<string, string>("clienteFinal", string.Empty),
-            new("indice", string.Empty),
-            new("codCliente", string.Empty),
-            new("nomeCliente", string.Empty),
-            new("situacao", string.Empty),
-            new("cidade", string.Empty),
-            new("razaoSocial", string.Empty),
-            new("nomeContato", string.Empty),
-            new("obsContato", string.Empty),
-            new("emailContato", string.Empty),
-            new("codClienteMatriz", string.Empty),
-            new("inscEstadual", string.Empty),
-            new("cnpj", Digits(cnpj)),
-            new("cpf", string.Empty)
-        }, cancellationToken);
+        await page.GotoAsync(AbsoluteUrl("cdq0101.do?method=prepListar"), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await FillByNameAsync(page, "cnpj", Digits(cnpj));
+        await SubmitCurrentFormAsync(page, "cdq0101.do?method=listar");
+        await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
 
-        var match = CustomerRowRegex.Match(body);
+        var html = await page.ContentAsync();
+        var match = CustomerRowRegex.Match(html);
         if (!match.Success)
         {
             return null;
@@ -210,13 +205,12 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
     }
 
     private async Task<RmaServiceOrderItemResultDto> OpenItemServiceOrderAsync(
-        HttpClient client,
+        IPage page,
         CustomerLookup customer,
         string cnpj,
-        RmaServiceOrderItemRequestDto item,
-        CancellationToken cancellationToken)
+        RmaServiceOrderItemRequestDto item)
     {
-        var serialValidation = await _serialValidationService.ValidateAsync(item.Serial, cancellationToken);
+        var serialValidation = await _serialValidationService.ValidateAsync(item.Serial, CancellationToken.None);
         if (!serialValidation.Exists)
         {
             return BuildResult(item.Serial, cnpj, customer.Name, null, null, item.DefectReported, false, null, false, "SERIAL_NAO_ENCONTRADO", "Serial nao encontrado na consulta atual do UNO.", null);
@@ -225,42 +219,52 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         var warrantyUntil = serialValidation.InvoiceIssuedAt?.AddYears(1);
         var isUnderWarranty = warrantyUntil.HasValue && warrantyUntil.Value >= DateOnly.FromDateTime(DateTime.Today);
         var categoryCode = isUnderWarranty ? WarrantyCategoryCode : OutOfWarrantyCategoryCode;
-        var categoryDescription = isUnderWarranty ? "Garantia manutencao" : "Fora de garantia manutencao";
+        var defect = item.DefectReported!.Trim();
 
-        var osPage = await GetStringAsync(client, "osw0001.do?method=prepTela", cancellationToken);
-        var os = UnoOsForm.FromHtml(osPage);
-        os.CodCliente = customer.Code;
-
-        osPage = await PostStringAsync(client, "osw0001.do?method=buscarCliente", os.ToMainForm(), cancellationToken);
-        os = os.Merge(UnoOsForm.FromHtml(osPage));
-
-        var itemCode = await FindItemAsync(client, customer.Code, serialValidation.Serial, cancellationToken);
+        var itemCode = await FindItemAsync(page, customer.Code, serialValidation.Serial);
         if (string.IsNullOrWhiteSpace(itemCode))
         {
-            itemCode = await CreateItemAsync(client, customer.Code, serialValidation, cancellationToken);
+            itemCode = await CreateItemAsync(page, customer.Code, serialValidation);
         }
 
-        os.CodItem = itemCode;
-        osPage = await PostStringAsync(client, "osw0001.do?method=buscarItem", os.ToMainForm(), cancellationToken);
-        os = os.Merge(UnoOsForm.FromHtml(osPage));
+        await page.GotoAsync(AbsoluteUrl("osw0001.do?method=prepTela"), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
 
-        os.Ccusto = CostCenterCode.ToString(CultureInfo.InvariantCulture);
-        osPage = await PostStringAsync(client, "osw0001.do?method=buscarCCusto", os.ToMainForm(), cancellationToken);
-        os = os.Merge(UnoOsForm.FromHtml(osPage));
+        await FillByNameAsync(page, "codCliente", customer.Code);
+        await SubmitCurrentFormAsync(page, "osw0001.do?method=buscarCliente");
+
+        await FillByNameAsync(page, "ccusto", CostCenterCode.ToString(CultureInfo.InvariantCulture));
+        await SubmitCurrentFormAsync(page, "osw0001.do?method=buscarCCusto");
+
+        await FillByNameAsync(page, "codItem", itemCode);
+        await SubmitCurrentFormAsync(page, "osw0001.do?method=buscarItem");
+
+        await FillByNameAsync(page, "codCategoria", categoryCode.ToString(CultureInfo.InvariantCulture));
+        await SelectByNameAsync(page, "codCategoria", categoryCode.ToString(CultureInfo.InvariantCulture));
+        await FillByNameAsync(page, "codAtendente", AttendantCode.ToString(CultureInfo.InvariantCulture));
+        await FillByNameAsync(page, "defeitoRelatado", defect);
+        await FillByNameAsync(page, "qtd", "1");
 
         var today = DateTime.Today.ToString("dd/MM/yyyy", CultureInfo.GetCultureInfo("pt-BR"));
-        var defect = string.IsNullOrWhiteSpace(item.DefectReported) ? "Defeito relatado pelo cliente." : item.DefectReported;
-        var dataForm = BuildServiceDataForm(os.Token, categoryCode, today, defect);
+        await FillByNameAsync(page, "dtAbertura", today);
+        await FillByNameAsync(page, "dtPrevisaoConclusao", today);
+        await FillByNameAsync(page, "dtComprometida", today);
 
-        await PostStringAsync(client, "osw0001.do?method=buscarCategoria", dataForm, cancellationToken);
-        await PostStringAsync(client, "osw0001.do?method=gravarDados", dataForm, cancellationToken);
-        await PostStringAsync(client, "osw0001.do?method=gravarDados&cmd=gravar", dataForm, cancellationToken);
+        await SelectByNameAsync(page, "codStatus", "10");
+        await SelectByNameAsync(page, "modalidade", "1");
+        await SelectByNameAsync(page, "origem", "1");
+        await SelectByNameAsync(page, "modoResposta", "4");
+        await SelectByNameAsync(page, "motivo", "1");
+        await SelectByNameAsync(page, "codStatusDefeito", "1");
 
-        os.Qtd = "1,00";
-        var finalHtml = await PostStringAsync(client, "osw0001.do?method=gravar", os.ToMainForm(), cancellationToken);
+        await SubmitCurrentFormAsync(page, "osw0001.do?method=gravarDados");
+        await SubmitCurrentFormAsync(page, "osw0001.do?method=gravarDados&cmd=gravar");
+        await SubmitCurrentFormAsync(page, "osw0001.do?method=gravar");
+
+        var finalHtml = await page.ContentAsync();
         var serviceOrderCode = ExtractServiceOrderCode(finalHtml);
         if (string.IsNullOrWhiteSpace(serviceOrderCode))
         {
+            var artifact = await SaveFailureArtifactsAsync(page, $"uno-os-not-confirmed-{serialValidation.Serial.Replace('/', '-')}");
             var message = ExtractControllerMessage(finalHtml);
             return BuildResult(
                 serialValidation.Serial,
@@ -274,8 +278,8 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
                 false,
                 "UNO_OS_NAO_CONFIRMADA",
                 string.IsNullOrWhiteSpace(message)
-                    ? "UNO retornou sucesso HTTP, mas nao retornou codigo de O.S apos gravar."
-                    : message,
+                    ? $"UNO nao retornou codigo de O.S apos gravar. Artefato: {artifact}"
+                    : $"{message} Artefato: {artifact}",
                 null);
         }
 
@@ -294,72 +298,43 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             serviceOrderCode);
     }
 
-    private async Task<string?> FindItemAsync(HttpClient client, string customerCode, string serial, CancellationToken cancellationToken)
+    private async Task<string?> FindItemAsync(IPage page, string customerCode, string serial)
     {
-        var page = await GetStringAsync(client, $"eqq0008.do?method=prepListar&codCliente={Uri.EscapeDataString(customerCode)}&fixaCliente=true&codPlano=", cancellationToken);
-        var token = ExtractToken(page);
-        var body = await PostStringAsync(client, "eqq0008.do?method=listar", new[]
-        {
-            Token(token),
-            Token(token),
-            new KeyValuePair<string, string>("codItem", string.Empty),
-            new("codProduto", string.Empty),
-            new("descricao", string.Empty),
-            new("nrSerie", serial),
-            new("nrPatrimonio", string.Empty),
-            new("nomeVendedor", string.Empty),
-            new("situacao", "1")
-        }, cancellationToken);
+        await page.GotoAsync(
+            AbsoluteUrl($"eqq0008.do?method=prepListar&codCliente={Uri.EscapeDataString(customerCode)}&fixaCliente=true&codPlano="),
+            new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await FillByNameAsync(page, "nrSerie", serial);
+        await SubmitCurrentFormAsync(page, "eqq0008.do?method=listar");
 
-        var match = ExistingItemRegex.Match(body);
-        if (match.Success)
-        {
-            return match.Groups["code"].Value;
-        }
-
-        return body.Contains("Encontrados 0", StringComparison.OrdinalIgnoreCase)
-            ? null
-            : null;
+        var html = await page.ContentAsync();
+        var match = ExistingItemRegex.Match(html);
+        return match.Success ? match.Groups["code"].Value : null;
     }
 
     private async Task<string> CreateItemAsync(
-        HttpClient client,
+        IPage page,
         string customerCode,
-        SerialValidationResultDto serialValidation,
-        CancellationToken cancellationToken)
+        SerialValidationResultDto serialValidation)
     {
         if (string.IsNullOrWhiteSpace(serialValidation.ProductCode))
         {
             throw new InvalidOperationException($"Consulta do serial {serialValidation.Serial} nao retornou codigo do produto.");
         }
 
-        var page = await GetStringAsync(client, $"eqw0017.do?method=prepTela&codCliente={Uri.EscapeDataString(customerCode)}&fixaCliente=true", cancellationToken);
-        var token = ExtractToken(page);
-        var body = await PostStringAsync(client, "eqw0017.do?method=gravar", new[]
-        {
-            Token(token),
-            Token(token),
-            new KeyValuePair<string, string>("origem", "2"),
-            new("uploadSubFolders", string.Empty),
-            new("uploadRootPath", string.Empty),
-            new("codItem", string.Empty),
-            new("codCliente", customerCode),
-            new("dtInstalacao", string.Empty),
-            new("dtProximaMP", string.Empty),
-            new("dtUltimaMP", string.Empty),
-            new("codPlano", string.Empty),
-            new("situacao", "1"),
-            new("codProduto", serialValidation.ProductCode),
-            new("descComercial", serialValidation.ProductDescription ?? string.Empty),
-            new("descTecnica", string.Empty),
-            new("observacao", string.Empty),
-            new("qtd", "1"),
-            new("nrSerie", serialValidation.Serial),
-            new("nrPatrimonio", string.Empty),
-            new("vendedorItem", string.Empty)
-        }, cancellationToken);
+        await page.GotoAsync(
+            AbsoluteUrl($"eqw0017.do?method=prepTela&codCliente={Uri.EscapeDataString(customerCode)}&fixaCliente=true"),
+            new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
 
-        var match = CreatedItemRegex.Match(body);
+        await FillByNameAsync(page, "codCliente", customerCode);
+        await FillByNameAsync(page, "codProduto", serialValidation.ProductCode);
+        await FillByNameAsync(page, "descComercial", serialValidation.ProductDescription ?? string.Empty);
+        await FillByNameAsync(page, "qtd", "1");
+        await FillByNameAsync(page, "nrSerie", serialValidation.Serial);
+        await SelectByNameAsync(page, "situacao", "1");
+        await SubmitCurrentFormAsync(page, "eqw0017.do?method=gravar");
+
+        var html = await page.ContentAsync();
+        var match = CreatedItemRegex.Match(html);
         if (!match.Success)
         {
             throw new InvalidOperationException($"UNO nao retornou codItem apos criar o item do serial {serialValidation.Serial}.");
@@ -368,44 +343,110 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         return match.Groups["code"].Value;
     }
 
-    private static IReadOnlyCollection<KeyValuePair<string, string>> BuildServiceDataForm(
-        string token,
-        int categoryCode,
-        string today,
-        string defect)
+    private async Task FillByNameAsync(IPage page, string name, string value)
     {
-        return
-        [
-            Token(token),
-            new("enviarEmailCliente", string.Empty),
-            new("perguntarEmailCliente", string.Empty),
-            new("codStatus", "10"),
-            new("codCategoria", categoryCode.ToString(CultureInfo.InvariantCulture)),
-            new("modalidade", "1"),
-            new("tipoOs", "1"),
-            new("codAtendente", AttendantCode.ToString(CultureInfo.InvariantCulture)),
-            new("codResponsavel", string.Empty),
-            new("dtAbertura", today),
-            new("origem", "1"),
-            new("dtPrevisaoConclusao", today),
-            new("previsaoHoras", string.Empty),
-            new("dtComprometida", today),
-            new("hora", string.Empty),
-            new("modoResposta", "4"),
-            new("observacoes", string.Empty),
-            new("prioridade", "100"),
-            new("horaInicio", string.Empty),
-            new("horaTermino", string.Empty),
-            new("horaFechamento", string.Empty),
-            new("dtAgendamento", string.Empty),
-            new("horaInicioAgendamento", string.Empty),
-            new("defeitoRelatado", defect),
-            new("causaDefeito", string.Empty),
-            new("defeitoConstatado", string.Empty),
-            new("motivo", "1"),
-            new("solucaoDefeito", string.Empty),
-            new("codStatusDefeito", "1")
-        ];
+        var locator = FindEditableField(page, name);
+        if (locator is null)
+        {
+            _logger.LogDebug("Campo {Field} nao encontrado/editavel na tela atual do UNO.", name);
+            return;
+        }
+
+        await locator.FillAsync(value);
+    }
+
+    private static async Task SelectByNameAsync(IPage page, string name, string value)
+    {
+        var locator = FindField(page, name);
+        if (locator is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await locator.SelectOptionAsync(new[] { value });
+        }
+        catch (PlaywrightException)
+        {
+            await locator.FillAsync(value);
+        }
+    }
+
+    private static ILocator? FindEditableField(IPage page, string name)
+    {
+        foreach (var frame in page.Frames)
+        {
+            var locator = frame.Locator($"input[name='{name}'], textarea[name='{name}'], select[name='{name}']").First;
+            if (locator.CountAsync().GetAwaiter().GetResult() > 0)
+            {
+                return locator;
+            }
+        }
+
+        return null;
+    }
+
+    private static ILocator? FindField(IPage page, string name)
+    {
+        foreach (var frame in page.Frames)
+        {
+            var locator = frame.Locator($"input[name='{name}'], textarea[name='{name}'], select[name='{name}']").First;
+            if (locator.CountAsync().GetAwaiter().GetResult() > 0)
+            {
+                return locator;
+            }
+        }
+
+        return null;
+    }
+
+    private async Task SubmitCurrentFormAsync(IPage page, string action)
+    {
+        var absoluteAction = AbsoluteUrl(action);
+        foreach (var frame in page.Frames)
+        {
+            var hasForm = await frame.Locator("form").CountAsync() > 0;
+            if (!hasForm)
+            {
+                continue;
+            }
+
+            await frame.EvaluateAsync(
+                @"([action]) => {
+                    const form = document.forms[0];
+                    form.target = '_self';
+                    form.action = action;
+                    form.submit();
+                }",
+                new[] { absoluteAction });
+            await page.WaitForTimeoutAsync(900);
+            return;
+        }
+
+        throw new InvalidOperationException($"Formulario nao encontrado para enviar {action}.");
+    }
+
+    private async Task<string> SaveFailureArtifactsAsync(IPage page, string name)
+    {
+        try
+        {
+            var directory = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, _options.ArtifactsPath));
+            Directory.CreateDirectory(directory);
+            var safeName = Regex.Replace(name, @"[^a-zA-Z0-9_.-]", "-");
+            var timestamp = DateTimeOffset.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+            var htmlPath = Path.Combine(directory, $"{timestamp}-{safeName}.html");
+            var pngPath = Path.Combine(directory, $"{timestamp}-{safeName}.png");
+
+            await File.WriteAllTextAsync(htmlPath, await page.ContentAsync());
+            await page.ScreenshotAsync(new PageScreenshotOptions { Path = pngPath, FullPage = true });
+            return htmlPath;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Nao foi possivel salvar artefatos do UNO.");
+            return string.Empty;
+        }
     }
 
     private static RmaServiceOrderItemResultDto BuildResult(
@@ -445,88 +486,16 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             serviceOrderCode);
     }
 
-    private static async Task<string> GetStringAsync(HttpClient client, string url, CancellationToken cancellationToken)
+    private string AbsoluteUrl(string path)
     {
-        var operation = $"GET {UrlLabel(url)}";
-        try
-        {
-            using var response = await client.GetAsync(url, cancellationToken);
-            await EnsureUnoSuccessAsync(response, operation, cancellationToken);
-            return await response.Content.ReadAsStringAsync(cancellationToken);
-        }
-        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
-        {
-            throw new InvalidOperationException($"Timeout no UNO durante {operation}.", ex);
-        }
-    }
-
-    private static async Task<string> PostStringAsync(
-        HttpClient client,
-        string url,
-        IEnumerable<KeyValuePair<string, string>> form,
-        CancellationToken cancellationToken)
-    {
-        var operation = $"POST {UrlLabel(url)}";
-        try
-        {
-            using var content = new FormUrlEncodedContent(form);
-            using var response = await client.PostAsync(url, content, cancellationToken);
-            await EnsureUnoSuccessAsync(response, operation, cancellationToken);
-            return await response.Content.ReadAsStringAsync(cancellationToken);
-        }
-        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
-        {
-            throw new InvalidOperationException($"Timeout no UNO durante {operation}.", ex);
-        }
-    }
-
-    private static async Task EnsureUnoSuccessAsync(
-        HttpResponseMessage response,
-        string operation,
-        CancellationToken cancellationToken)
-    {
-        if (response.IsSuccessStatusCode)
-        {
-            return;
-        }
-
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        var preview = CleanHtml(body);
-        if (preview.Length > 300)
-        {
-            preview = preview[..300];
-        }
-
-        throw new InvalidOperationException(
-            $"{operation} retornou HTTP {(int)response.StatusCode} ({response.ReasonPhrase}). {preview}");
-    }
-
-    private static string UrlLabel(string url)
-    {
-        return string.IsNullOrWhiteSpace(url) ? "/" : url;
-    }
-
-    private static KeyValuePair<string, string> Token(string value)
-    {
-        return new KeyValuePair<string, string>("org.apache.struts.taglib.html.TOKEN", value);
-    }
-
-    private static string ExtractToken(string html)
-    {
-        var match = TokenRegex.Match(html);
-        if (!match.Success)
-        {
-            throw new InvalidOperationException("Token Struts nao encontrado na resposta do UNO.");
-        }
-
-        return WebUtility.HtmlDecode(match.Groups[1].Value);
+        return new Uri(new Uri(EnsureTrailingSlash(_options.BaseUrl)), path).ToString();
     }
 
     private static string ExtractInputValue(string html, string name)
     {
         var match = Regex.Match(
             html,
-            $"name=\"{Regex.Escape(name)}\"[^>]*value=\"([^\"]*)\"",
+            $"name=\"{Regex.Escape(name)}\"(?=[\\s>])[^>]*value=\"([^\"]*)\"",
             RegexOptions.IgnoreCase);
 
         return match.Success ? WebUtility.HtmlDecode(match.Groups[1].Value) : string.Empty;
@@ -535,18 +504,13 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
     private static string ExtractServiceOrderCode(string html)
     {
         var value = ExtractInputValue(html, "codOs");
-        if (!string.IsNullOrWhiteSpace(value))
-        {
-            return value;
-        }
+        return IsValidServiceOrderCode(value) ? value : string.Empty;
+    }
 
-        var text = CleanHtml(html);
-        var match = Regex.Match(
-            text,
-            @"(?:Ordem\s+de\s+Servi[cç]o|O\.?S\.?|OS)\D{0,20}(?<code>\d{4,})",
-            RegexOptions.IgnoreCase);
-
-        return match.Success ? match.Groups["code"].Value : string.Empty;
+    private static bool IsValidServiceOrderCode(string value)
+    {
+        var digits = Digits(value);
+        return digits.Length >= 5 && digits != "0001";
     }
 
     private static string ExtractControllerMessage(string html)
@@ -557,35 +521,6 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             RegexOptions.IgnoreCase | RegexOptions.Singleline);
 
         return match.Success ? CleanHtml(match.Groups[1].Value) : string.Empty;
-    }
-
-    private static string ExtractDivValue(string html, string id)
-    {
-        var match = Regex.Match(
-            html,
-            $"id=\"{Regex.Escape(id)}\"[^>]*>(.*?)</div>",
-            RegexOptions.IgnoreCase | RegexOptions.Singleline);
-
-        return match.Success ? CleanHtml(match.Groups[1].Value) : string.Empty;
-    }
-
-    private static string ExtractSelectedOptionValue(string html, string name)
-    {
-        var select = Regex.Match(
-            html,
-            $"<select[^>]*name=\"{Regex.Escape(name)}\"[^>]*>(.*?)</select>",
-            RegexOptions.IgnoreCase | RegexOptions.Singleline);
-        if (!select.Success)
-        {
-            return string.Empty;
-        }
-
-        var option = Regex.Match(
-            select.Groups[1].Value,
-            "<option[^>]*value=\"([^\"]*)\"[^>]*(?:SELECTED|selected)[^>]*>",
-            RegexOptions.IgnoreCase | RegexOptions.Singleline);
-
-        return option.Success ? WebUtility.HtmlDecode(option.Groups[1].Value) : string.Empty;
     }
 
     private static string CleanHtml(string value)
@@ -605,125 +540,4 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
     }
 
     private sealed record CustomerLookup(string Code, string Name, string Cnpj);
-
-    private sealed class UnoOsForm
-    {
-        public string Token { get; set; } = string.Empty;
-
-        public string UserId { get; set; } = AttendantCode.ToString(CultureInfo.InvariantCulture);
-
-        public string SessionId { get; set; } = string.Empty;
-
-        public string CodEmpresa { get; set; } = "4";
-
-        public string Corpo { get; set; } = "0001";
-
-        public string CodCliente { get; set; } = string.Empty;
-
-        public string CodContato { get; set; } = string.Empty;
-
-        public string NomeContato { get; set; } = string.Empty;
-
-        public string Ddd { get; set; } = string.Empty;
-
-        public string Telefone { get; set; } = string.Empty;
-
-        public string CodItem { get; set; } = string.Empty;
-
-        public string Ccusto { get; set; } = string.Empty;
-
-        public string Qtd { get; set; } = "1";
-
-        public static UnoOsForm FromHtml(string html)
-        {
-            return new UnoOsForm
-            {
-                Token = TryExtractToken(html),
-                UserId = ExtractInputValue(html, "userId"),
-                SessionId = ExtractInputValue(html, "sessionId"),
-                CodEmpresa = ExtractInputValue(html, "codEmpresa"),
-                Corpo = ExtractInputValue(html, "corpo"),
-                CodCliente = ExtractInputValue(html, "codCliente"),
-                CodContato = FirstNonEmpty(ExtractInputValue(html, "codContato"), ExtractSelectedOptionValue(html, "codContato")),
-                NomeContato = FirstNonEmpty(ExtractInputValue(html, "nomeContato"), ExtractDivValue(html, "nomeContato"), "MARCELO"),
-                Ddd = ExtractInputValue(html, "ddd"),
-                Telefone = ExtractInputValue(html, "telefone"),
-                CodItem = ExtractInputValue(html, "codItem"),
-                Ccusto = ExtractInputValue(html, "ccusto"),
-                Qtd = FirstNonEmpty(ExtractInputValue(html, "qtd"), "1")
-            };
-        }
-
-        public UnoOsForm Merge(UnoOsForm next)
-        {
-            Token = FirstNonEmpty(next.Token, Token);
-            UserId = FirstNonEmpty(next.UserId, UserId);
-            SessionId = FirstNonEmpty(next.SessionId, SessionId);
-            CodEmpresa = FirstNonEmpty(next.CodEmpresa, CodEmpresa);
-            Corpo = FirstNonEmpty(next.Corpo, Corpo);
-            CodCliente = FirstNonEmpty(next.CodCliente, CodCliente);
-            CodContato = FirstNonEmpty(next.CodContato, CodContato);
-            NomeContato = FirstNonEmpty(next.NomeContato, NomeContato);
-            Ddd = FirstNonEmpty(next.Ddd, Ddd);
-            Telefone = FirstNonEmpty(next.Telefone, Telefone);
-            CodItem = FirstNonEmpty(next.CodItem, CodItem);
-            Ccusto = FirstNonEmpty(next.Ccusto, Ccusto);
-            Qtd = FirstNonEmpty(next.Qtd, Qtd);
-            return this;
-        }
-
-        public IReadOnlyCollection<KeyValuePair<string, string>> ToMainForm()
-        {
-            return
-            [
-                TokenValue(),
-                TokenValue(),
-                new("userId", UserId),
-                new("sessionId", SessionId),
-                new("codEmpresa", CodEmpresa),
-                new("corpo", Corpo),
-                new("emailNomeRemetente", string.Empty),
-                new("nomeResponsavel", string.Empty),
-                new("emailDestinatario", string.Empty),
-                new("emailAssunto", string.Empty),
-                new("emailMensagem", string.Empty),
-                new("emailSMTP", string.Empty),
-                new("linguagem", "pt_BR"),
-                new("corpo", Corpo),
-                new("codRecebimento", string.Empty),
-                new("codItem", CodItem),
-                new("msgConfirmaCopiaOS", "Confirma a copia da OS?"),
-                new("codOs", string.Empty),
-                new("codAtendimento", string.Empty),
-                new("codCliente", CodCliente),
-                new("codContato", CodContato),
-                new("nomeContato", NomeContato),
-                new("ddd", Ddd),
-                new("telefone", Telefone),
-                new("ramal", string.Empty),
-                new("codPlano", string.Empty),
-                new("codOportunidade", string.Empty),
-                new("codOsCliente", string.Empty),
-                new("ccusto", Ccusto),
-                new("nfe", string.Empty),
-                new("qtd", Qtd)
-            ];
-        }
-
-        private KeyValuePair<string, string> TokenValue()
-        {
-            return new KeyValuePair<string, string>("org.apache.struts.taglib.html.TOKEN", Token);
-        }
-
-        private static string TryExtractToken(string html)
-        {
-            var match = TokenRegex.Match(html);
-            return match.Success ? WebUtility.HtmlDecode(match.Groups[1].Value) : string.Empty;
-        }
-    }
-
-    private static string FirstNonEmpty(params string?[] values)
-    {
-        return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
-    }
 }

@@ -11,4 +11,10 @@ public sealed class UnoErpOptions
     public string Password { get; set; } = string.Empty;
 
     public int TimeoutSeconds { get; set; } = 300;
+
+    public bool BrowserHeadless { get; set; } = true;
+
+    public int BrowserSlowMoMs { get; set; } = 0;
+
+    public string ArtifactsPath { get; set; } = "temp/uno-browser";
 }
