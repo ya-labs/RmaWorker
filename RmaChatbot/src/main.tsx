@@ -25,6 +25,12 @@ type ApiResponse = {
 type ServiceOrderResponse = {
   status: string;
   message: string;
+  items: Array<{
+    serial: string;
+    status: string;
+    reason?: string | null;
+    serviceOrderCode?: string | null;
+  }>;
 };
 
 type HealthStatus = 'checking' | 'online' | 'offline';
@@ -97,6 +103,7 @@ function App() {
   const [email, setEmail] = React.useState(initialEmail);
   const [serial, setSerial] = React.useState('');
   const [cnpj, setCnpj] = React.useState('');
+  const [serviceOrderDefect, setServiceOrderDefect] = React.useState('');
   const [response, setResponse] = React.useState<ApiResponse>(emptyResponse);
   const [copied, setCopied] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
@@ -111,8 +118,12 @@ function App() {
   const isReady = response.status === 'APTO';
   const canSubmit = requestMode === 'email'
     ? email.trim().length > 0
-    : serial.trim().length > 0 && cnpj.trim().length > 0;
+    : serial.trim().length > 0 && cnpj.trim().length > 0 && serviceOrderDefect.trim().length > 0;
   const eligibleResults = response.results.filter((result) => result.status === 'APTO' && result.extraction.serial);
+  const eligibleResultsMissingDefect = eligibleResults.some((result) => {
+    const defect = result.extraction.defeito || serviceOrderDefect;
+    return defect.trim().length === 0;
+  });
   const canOpenServiceOrder = eligibleResults.length > 0;
 
   React.useEffect(() => {
@@ -213,6 +224,10 @@ function App() {
     setError(null);
 
     try {
+      if (eligibleResultsMissingDefect) {
+        throw new Error('Informe o defeito relatado antes de abrir a O.S no UNO.');
+      }
+
       const firstCnpj = cnpj.trim()
         || eligibleResults.find((result) => result.extraction.cnpj)?.extraction.cnpj
         || extraction?.cnpj
@@ -227,7 +242,7 @@ function App() {
           cnpj: firstCnpj,
           items: eligibleResults.map((result) => ({
             serial: result.extraction.serial,
-            defectReported: result.extraction.defeito,
+            defectReported: result.extraction.defeito || serviceOrderDefect,
           })),
         }),
       });
@@ -238,7 +253,17 @@ function App() {
       }
 
       const serviceOrderResponse = await apiResponse.json() as ServiceOrderResponse;
-      setServiceOrderStatus(serviceOrderResponse.message);
+      const openedCodes = serviceOrderResponse.items
+        .filter((item) => item.serviceOrderCode)
+        .map((item) => `${item.serial}: O.S ${item.serviceOrderCode}`);
+      const failedItems = serviceOrderResponse.items
+        .filter((item) => item.status !== 'OS_ABERTA')
+        .map((item) => `${item.serial}: ${item.reason || item.status}`);
+      setServiceOrderStatus([
+        serviceOrderResponse.message,
+        ...openedCodes,
+        ...failedItems,
+      ].join('\n'));
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Falha ao abrir a O.S no UNO.';
       setError(message);
@@ -251,6 +276,7 @@ function App() {
     setEmail('');
     setSerial('');
     setCnpj('');
+    setServiceOrderDefect('');
     setResponse(emptyResponse);
     setError(null);
     setCopied(false);
@@ -336,6 +362,15 @@ function App() {
                     spellCheck="false"
                     aria-label="Informe um ou mais numeros de serie"
                   />
+                  <label htmlFor="service-order-defect">Defeito relatado</label>
+                  <textarea
+                    id="service-order-defect"
+                    value={serviceOrderDefect}
+                    onChange={(event) => setServiceOrderDefect(event.target.value)}
+                    placeholder="Descreva o defeito informado pelo cliente"
+                    spellCheck="false"
+                    aria-label="Informe o defeito relatado para abrir a ordem de servico"
+                  />
                 </div>
               )}
             </div>
@@ -380,7 +415,7 @@ function App() {
               {canOpenServiceOrder ? (
                 <div className="service-order-prompt">
                   <span>Deseja abrir a O.S no UNO?</span>
-                  <button type="button" onClick={handleOpenServiceOrder} disabled={openingServiceOrder}>
+                  <button type="button" onClick={handleOpenServiceOrder} disabled={openingServiceOrder || eligibleResultsMissingDefect}>
                     <Send size={18} />
                     <span>{openingServiceOrder ? 'Abrindo O.S' : 'Abrir O.S no UNO'}</span>
                   </button>

@@ -63,6 +63,33 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             return new RmaServiceOrderResponseDto("CNPJ_INVALIDO", "Informe um CNPJ valido para buscar a revenda no UNO.", []);
         }
 
+        var missingDefectItems = request.Items
+            .Where(item => string.IsNullOrWhiteSpace(item.DefectReported))
+            .ToList();
+        if (missingDefectItems.Count > 0)
+        {
+            var results = missingDefectItems
+                .Select(item => BuildResult(
+                    item.Serial,
+                    request.Cnpj,
+                    null,
+                    null,
+                    null,
+                    item.DefectReported,
+                    false,
+                    null,
+                    false,
+                    "DEFEITO_AUSENTE",
+                    "Informe o defeito relatado antes de abrir a O.S no UNO.",
+                    null))
+                .ToList();
+
+            return new RmaServiceOrderResponseDto(
+                "DEFEITO_AUSENTE",
+                "Informe o defeito relatado antes de abrir a O.S no UNO.",
+                results);
+        }
+
         if (string.IsNullOrWhiteSpace(_options.Login) || string.IsNullOrWhiteSpace(_options.Password))
         {
             return new RmaServiceOrderResponseDto(
@@ -231,7 +258,26 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
 
         os.Qtd = "1,00";
         var finalHtml = await PostStringAsync(client, "osw0001.do?method=gravar", os.ToMainForm(), cancellationToken);
-        var serviceOrderCode = ExtractInputValue(finalHtml, "codOs");
+        var serviceOrderCode = ExtractServiceOrderCode(finalHtml);
+        if (string.IsNullOrWhiteSpace(serviceOrderCode))
+        {
+            var message = ExtractControllerMessage(finalHtml);
+            return BuildResult(
+                serialValidation.Serial,
+                cnpj,
+                customer.Name,
+                serialValidation.ProductCode,
+                serialValidation.ProductDescription,
+                defect,
+                isUnderWarranty,
+                warrantyUntil,
+                false,
+                "UNO_OS_NAO_CONFIRMADA",
+                string.IsNullOrWhiteSpace(message)
+                    ? "UNO retornou sucesso HTTP, mas nao retornou codigo de O.S apos gravar."
+                    : message,
+                null);
+        }
 
         return BuildResult(
             serialValidation.Serial,
@@ -245,7 +291,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             true,
             "OS_ABERTA",
             null,
-            string.IsNullOrWhiteSpace(serviceOrderCode) ? null : serviceOrderCode);
+            serviceOrderCode);
     }
 
     private async Task<string?> FindItemAsync(HttpClient client, string customerCode, string serial, CancellationToken cancellationToken)
@@ -468,6 +514,33 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             RegexOptions.IgnoreCase);
 
         return match.Success ? WebUtility.HtmlDecode(match.Groups[1].Value) : string.Empty;
+    }
+
+    private static string ExtractServiceOrderCode(string html)
+    {
+        var value = ExtractInputValue(html, "codOs");
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            return value;
+        }
+
+        var text = CleanHtml(html);
+        var match = Regex.Match(
+            text,
+            @"(?:Ordem\s+de\s+Servi[cç]o|O\.?S\.?|OS)\D{0,20}(?<code>\d{4,})",
+            RegexOptions.IgnoreCase);
+
+        return match.Success ? match.Groups["code"].Value : string.Empty;
+    }
+
+    private static string ExtractControllerMessage(string html)
+    {
+        var match = Regex.Match(
+            html,
+            "id=\"divMensagens\"[^>]*>(.*?)</div>",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        return match.Success ? CleanHtml(match.Groups[1].Value) : string.Empty;
     }
 
     private static string ExtractDivValue(string html, string id)

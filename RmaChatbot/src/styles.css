@@ -416,6 +416,7 @@ pre {
   color: #334155;
   font-size: 0.9rem;
   font-weight: 700;
+  white-space: pre-wrap;
 }
 
 .copy-button {
