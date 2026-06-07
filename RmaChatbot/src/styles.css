@@ -383,6 +383,41 @@ pre {
   overflow-wrap: anywhere;
 }
 
+.service-order-prompt {
+  margin: 0 16px 16px;
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-radius: 8px;
+  border: 1px solid #9ad5b3;
+  background: #f0fdf4;
+  color: #166534;
+  flex-wrap: wrap;
+}
+
+.service-order-prompt span {
+  font-weight: 800;
+}
+
+.service-order-prompt button {
+  background: #166534;
+  color: #ffffff;
+}
+
+.service-order-prompt button:hover {
+  background: #14532d;
+}
+
+.service-order-prompt p {
+  flex-basis: 100%;
+  margin: 0;
+  color: #334155;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
 .copy-button {
   margin: 14px 16px 16px;
   background: #2563eb;

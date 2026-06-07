@@ -17,6 +17,8 @@ builder.Services.Configure<SerialValidationOptions>(
     builder.Configuration.GetSection(SerialValidationOptions.SectionName));
 builder.Services.Configure<InvoiceOptions>(
     builder.Configuration.GetSection(InvoiceOptions.SectionName));
+builder.Services.Configure<UnoErpOptions>(
+    builder.Configuration.GetSection(UnoErpOptions.SectionName));
 
 builder.Services.AddCors(options =>
 {
@@ -84,6 +86,12 @@ builder.Services.AddSingleton<ICnpjValidator, CnpjValidator>();
 builder.Services.AddSingleton<IEmailBodyCleaner, EmailBodyCleaner>();
 builder.Services.AddSingleton<IRmaTechnicalClassifier, RmaTechnicalClassifier>();
 builder.Services.AddSingleton<IRmaProcessorService, RmaProcessorService>();
+builder.Services.AddSingleton<IUnoServiceOrderService>(serviceProvider =>
+    new UnoServiceOrderService(
+        serviceProvider.GetRequiredService<ISerialValidationService>(),
+        serviceProvider.GetRequiredService<ICnpjValidator>(),
+        serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<UnoErpOptions>>(),
+        serviceProvider.GetRequiredService<ILogger<UnoServiceOrderService>>()));
 
 if (builder.Configuration.GetValue("Worker:EnableEmailWorker", false))
 {
@@ -131,6 +139,15 @@ app.MapPost("/api/rma/generate-by-serial", async (
     }
 
     var response = await processor.GenerateFromSerialAsync(request.Serial, request.Serials, cancellationToken);
+    return Results.Ok(response);
+});
+
+app.MapPost("/api/rma/service-order/open", async (
+    RmaServiceOrderRequestDto request,
+    IUnoServiceOrderService serviceOrderService,
+    CancellationToken cancellationToken) =>
+{
+    var response = await serviceOrderService.OpenAsync(request, cancellationToken);
     return Results.Ok(response);
 });
 

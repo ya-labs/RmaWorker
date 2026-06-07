@@ -22,6 +22,11 @@ type ApiResponse = {
   results: ApiResult[];
 };
 
+type ServiceOrderResponse = {
+  status: string;
+  message: string;
+};
+
 type HealthStatus = 'checking' | 'online' | 'offline';
 type RequestMode = 'email' | 'serial';
 
@@ -91,9 +96,12 @@ function App() {
   const [requestMode, setRequestMode] = React.useState<RequestMode>('email');
   const [email, setEmail] = React.useState(initialEmail);
   const [serial, setSerial] = React.useState('');
+  const [cnpj, setCnpj] = React.useState('');
   const [response, setResponse] = React.useState<ApiResponse>(emptyResponse);
   const [copied, setCopied] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
+  const [openingServiceOrder, setOpeningServiceOrder] = React.useState(false);
+  const [serviceOrderStatus, setServiceOrderStatus] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [healthStatus, setHealthStatus] = React.useState<HealthStatus>('checking');
 
@@ -101,7 +109,11 @@ function App() {
     ? { ...firstExtraction(response), serial: serialSummary(response) }
     : firstExtraction(response);
   const isReady = response.status === 'APTO';
-  const canSubmit = requestMode === 'email' ? email.trim().length > 0 : serial.trim().length > 0;
+  const canSubmit = requestMode === 'email'
+    ? email.trim().length > 0
+    : serial.trim().length > 0 && cnpj.trim().length > 0;
+  const eligibleResults = response.results.filter((result) => result.status === 'APTO' && result.extraction.serial);
+  const canOpenServiceOrder = eligibleResults.length > 0;
 
   React.useEffect(() => {
     let active = true;
@@ -136,6 +148,7 @@ function App() {
     setLoading(true);
     setCopied(false);
     setError(null);
+    setServiceOrderStatus(null);
 
     try {
       const endpoint = requestMode === 'email'
@@ -194,12 +207,54 @@ function App() {
     setCopied(true);
   }
 
+  async function handleOpenServiceOrder() {
+    setOpeningServiceOrder(true);
+    setServiceOrderStatus(null);
+    setError(null);
+
+    try {
+      const firstCnpj = cnpj.trim()
+        || eligibleResults.find((result) => result.extraction.cnpj)?.extraction.cnpj
+        || extraction?.cnpj
+        || null;
+
+      const apiResponse = await fetch(`${apiBaseUrl}/api/rma/service-order/open`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          cnpj: firstCnpj,
+          items: eligibleResults.map((result) => ({
+            serial: result.extraction.serial,
+            defectReported: result.extraction.defeito,
+          })),
+        }),
+      });
+
+      if (!apiResponse.ok) {
+        const body = await apiResponse.text();
+        throw new Error(body || `Erro HTTP ${apiResponse.status}`);
+      }
+
+      const serviceOrderResponse = await apiResponse.json() as ServiceOrderResponse;
+      setServiceOrderStatus(serviceOrderResponse.message);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Falha ao abrir a O.S no UNO.';
+      setError(message);
+    } finally {
+      setOpeningServiceOrder(false);
+    }
+  }
+
   function handleReset() {
     setEmail('');
     setSerial('');
+    setCnpj('');
     setResponse(emptyResponse);
     setError(null);
     setCopied(false);
+    setServiceOrderStatus(null);
   }
 
   return (
@@ -263,6 +318,15 @@ function App() {
                 />
               ) : (
                 <div className="serial-panel">
+                  <label htmlFor="cnpj-input">CNPJ da revenda</label>
+                  <input
+                    id="cnpj-input"
+                    value={cnpj}
+                    onChange={(event) => setCnpj(event.target.value)}
+                    placeholder="36045173000173"
+                    spellCheck="false"
+                    aria-label="Informe o CNPJ da revenda"
+                  />
                   <label htmlFor="serial-input">Series dos equipamentos</label>
                   <textarea
                     id="serial-input"
@@ -313,6 +377,16 @@ function App() {
               ) : (
                 <pre>{response.responseBody}</pre>
               )}
+              {canOpenServiceOrder ? (
+                <div className="service-order-prompt">
+                  <span>Deseja abrir a O.S no UNO?</span>
+                  <button type="button" onClick={handleOpenServiceOrder} disabled={openingServiceOrder}>
+                    <Send size={18} />
+                    <span>{openingServiceOrder ? 'Abrindo O.S' : 'Abrir O.S no UNO'}</span>
+                  </button>
+                  {serviceOrderStatus ? <p>{serviceOrderStatus}</p> : null}
+                </div>
+              ) : null}
               <button className="copy-button" type="button" onClick={handleCopy} title="Copiar resposta">
                 <Clipboard size={18} />
                 <span>{copied ? 'Copiado' : 'Copiar resposta'}</span>
