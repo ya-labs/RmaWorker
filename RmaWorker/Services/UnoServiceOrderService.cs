@@ -124,7 +124,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
 
     private async Task LoginAsync(HttpClient client, CancellationToken cancellationToken)
     {
-        var loginPage = await GetStringAsync(client, "sgw0001.do", cancellationToken);
+        var loginPage = await GetStringAsync(client, string.Empty, cancellationToken);
         var token = ExtractToken(loginPage);
 
         var loginForm = new List<KeyValuePair<string, string>>
@@ -402,7 +402,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
     private static async Task<string> GetStringAsync(HttpClient client, string url, CancellationToken cancellationToken)
     {
         using var response = await client.GetAsync(url, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        await EnsureUnoSuccessAsync(response, $"GET {UrlLabel(url)}", cancellationToken);
         return await response.Content.ReadAsStringAsync(cancellationToken);
     }
 
@@ -414,8 +414,34 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
     {
         using var content = new FormUrlEncodedContent(form);
         using var response = await client.PostAsync(url, content, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        await EnsureUnoSuccessAsync(response, $"POST {UrlLabel(url)}", cancellationToken);
         return await response.Content.ReadAsStringAsync(cancellationToken);
+    }
+
+    private static async Task EnsureUnoSuccessAsync(
+        HttpResponseMessage response,
+        string operation,
+        CancellationToken cancellationToken)
+    {
+        if (response.IsSuccessStatusCode)
+        {
+            return;
+        }
+
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        var preview = CleanHtml(body);
+        if (preview.Length > 300)
+        {
+            preview = preview[..300];
+        }
+
+        throw new InvalidOperationException(
+            $"{operation} retornou HTTP {(int)response.StatusCode} ({response.ReasonPhrase}). {preview}");
+    }
+
+    private static string UrlLabel(string url)
+    {
+        return string.IsNullOrWhiteSpace(url) ? "/" : url;
     }
 
     private static KeyValuePair<string, string> Token(string value)
