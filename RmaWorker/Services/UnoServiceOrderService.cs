@@ -166,6 +166,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
                 catch (UnoSessionEndedException) when (attempt == 1)
                 {
                     _logger.LogWarning("Sessao do UNO encerrada apos login. Tentando relogar uma vez.");
+                    await page.Context.ClearCookiesAsync();
                     await page.WaitForTimeoutAsync(1500);
                 }
             }
@@ -187,7 +188,9 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
 
     private async Task LoginAsync(IPage page)
     {
-        await page.GotoAsync(AbsoluteUrl(string.Empty), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GotoAsync(AbsoluteUrl("sgw0001.do?method=login"), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        EnsureUnoSessionIsActive(await page.ContentAsync());
+
         await FillByNameAsync(page, "login", _options.Login);
         await FillByNameAsync(page, "senha", _options.Password);
         await SubmitCurrentFormAsync(page, "sgw0001.do?method=validarLogin");
