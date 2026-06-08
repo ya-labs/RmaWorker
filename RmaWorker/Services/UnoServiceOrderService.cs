@@ -129,6 +129,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             IgnoreHTTPSErrors = true,
             ViewportSize = new ViewportSize { Width = 1366, Height = 900 }
         });
+        await context.RouteAsync("**/desktop.do?method=logout**", async route => await route.AbortAsync());
 
         var page = await context.NewPageAsync();
         page.SetDefaultTimeout(_options.TimeoutSeconds * 1000);
@@ -189,20 +190,44 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
     private async Task LoginAsync(IPage page)
     {
         await page.GotoAsync(AbsoluteUrl("sgw0001.do?method=login"), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
-        EnsureUnoSessionIsActive(await page.ContentAsync());
+        await EnsureLoginFormAsync(page);
 
         await FillByNameAsync(page, "login", _options.Login);
         await FillByNameAsync(page, "senha", _options.Password);
         await SubmitCurrentFormAsync(page, "sgw0001.do?method=validarLogin");
         await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
 
-        var html = await page.ContentAsync();
+        var html = await GetStableContentAsync(page);
         EnsureUnoSessionIsActive(html);
         if (!html.Contains("UNO ERP", StringComparison.OrdinalIgnoreCase)
             && !page.Url.Contains("desktop", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException("Login no UNO nao retornou a tela esperada.");
         }
+    }
+
+    private async Task EnsureLoginFormAsync(IPage page)
+    {
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            if (FindField(page, "login") is not null && FindField(page, "senha") is not null)
+            {
+                return;
+            }
+
+            var html = await GetStableContentAsync(page);
+            if (!IsUnoSessionEnded(html))
+            {
+                break;
+            }
+
+            _logger.LogWarning("UNO retornou tela de sessao encerrada antes do formulario de login. Reabrindo tela de login.");
+            await page.Context.ClearCookiesAsync();
+            await page.GotoAsync(AbsoluteUrl($"sgw0001.do?method=login&_={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}"), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+            await page.WaitForTimeoutAsync(700);
+        }
+
+        throw new InvalidOperationException("Formulario de login do UNO nao foi encontrado.");
     }
 
     private async Task<CustomerLookup?> FindCustomerAsync(IPage page, string cnpj)
@@ -212,7 +237,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         await SubmitCurrentFormAsync(page, "cdq0101.do?method=listar");
         await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
 
-        var html = await page.ContentAsync();
+        var html = await GetStableContentAsync(page);
         EnsureUnoSessionIsActive(html);
         var match = CustomerRowRegex.Match(html);
         if (match.Success)
@@ -270,13 +295,13 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         await page.GotoAsync(AbsoluteUrl("osw0001.do?method=prepTela"), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
 
         await FillByNameAsync(page, "codCliente", customer.Code);
-        await SubmitCurrentFormAsync(page, "osw0001.do?method=buscarCliente");
+        await SubmitCurrentFormAsync(page, "osw0001.do?method=buscarCliente", "barraControladora");
 
         await FillByNameAsync(page, "ccusto", CostCenterCode.ToString(CultureInfo.InvariantCulture));
-        await SubmitCurrentFormAsync(page, "osw0001.do?method=buscarCCusto");
+        await SubmitCurrentFormAsync(page, "osw0001.do?method=buscarCCusto", "barraControladora");
 
         await FillByNameAsync(page, "codItem", itemCode);
-        await SubmitCurrentFormAsync(page, "osw0001.do?method=buscarItem");
+        await SubmitCurrentFormAsync(page, "osw0001.do?method=buscarItem", "barraControladora");
 
         await FillByNameAsync(page, "codCategoria", categoryCode.ToString(CultureInfo.InvariantCulture));
         await SelectByNameAsync(page, "codCategoria", categoryCode.ToString(CultureInfo.InvariantCulture));
@@ -296,11 +321,11 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         await SelectByNameAsync(page, "motivo", "1");
         await SelectByNameAsync(page, "codStatusDefeito", "1");
 
-        await SubmitCurrentFormAsync(page, "osw0001.do?method=gravarDados");
-        await SubmitCurrentFormAsync(page, "osw0001.do?method=gravarDados&cmd=gravar");
-        await SubmitCurrentFormAsync(page, "osw0001.do?method=gravar");
+        await SubmitCurrentFormAsync(page, "osw0001.do?method=gravarDados", "barraControladora", "defeitoRelatado");
+        await SubmitCurrentFormAsync(page, "osw0001.do?method=gravarDados&cmd=gravar", "barraControladora", "defeitoRelatado");
+        await page.WaitForTimeoutAsync(2_500);
 
-        var finalHtml = await page.ContentAsync();
+        var finalHtml = await GetAllFramesContentAsync(page);
         var serviceOrderCode = ExtractServiceOrderCode(finalHtml);
         if (string.IsNullOrWhiteSpace(serviceOrderCode))
         {
@@ -346,7 +371,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         await FillByNameAsync(page, "nrSerie", serial);
         await SubmitCurrentFormAsync(page, "eqq0008.do?method=listar");
 
-        var html = await page.ContentAsync();
+        var html = await GetStableContentAsync(page);
         var match = ExistingItemRegex.Match(html);
         return match.Success ? match.Groups["code"].Value : null;
     }
@@ -373,7 +398,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         await SelectByNameAsync(page, "situacao", "1");
         await SubmitCurrentFormAsync(page, "eqw0017.do?method=gravar");
 
-        var html = await page.ContentAsync();
+        var html = await GetStableContentAsync(page);
         var match = CreatedItemRegex.Match(html);
         if (!match.Success)
         {
@@ -392,7 +417,9 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             return;
         }
 
-        await locator.FillAsync(value);
+        await locator.EvaluateAsync(
+            "(element, fieldValue) => { element.value = fieldValue; }",
+            value);
     }
 
     private static async Task SelectByNameAsync(IPage page, string name, string value)
@@ -405,11 +432,13 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
 
         try
         {
-            await locator.SelectOptionAsync(new[] { value });
+            await locator.EvaluateAsync(
+                "(element, fieldValue) => { element.value = fieldValue; }",
+                value);
         }
         catch (PlaywrightException)
         {
-            await locator.FillAsync(value);
+            await locator.SelectOptionAsync(new[] { value });
         }
     }
 
@@ -441,30 +470,134 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         return null;
     }
 
-    private async Task SubmitCurrentFormAsync(IPage page, string action)
+    private async Task SubmitCurrentFormAsync(
+        IPage page,
+        string action,
+        string target = "_self",
+        string? preferredFieldName = null)
     {
         var absoluteAction = AbsoluteUrl(action);
-        foreach (var frame in page.Frames)
+        foreach (var frame in OrderFramesForSubmit(page, preferredFieldName))
         {
-            var hasForm = await frame.Locator("form").CountAsync() > 0;
+            bool hasForm;
+            try
+            {
+                hasForm = await frame.Locator("form").CountAsync() > 0;
+            }
+            catch (PlaywrightException ex) when (IsNavigationSideEffect(ex))
+            {
+                await page.WaitForTimeoutAsync(300);
+                continue;
+            }
+
             if (!hasForm)
             {
                 continue;
             }
 
-            await frame.EvaluateAsync(
-                @"([action]) => {
-                    const form = document.forms[0];
-                    form.target = '_self';
-                    form.action = action;
-                    form.submit();
-                }",
-                new[] { absoluteAction });
-            await page.WaitForTimeoutAsync(900);
+            try
+            {
+                await frame.EvaluateAsync(
+                    @"payload => {
+                        const form = document.forms[0];
+                        form.target = payload.target;
+                        form.action = payload.action;
+                        setTimeout(() => form.submit(), 0);
+                    }",
+                    new { action = absoluteAction, target });
+            }
+            catch (PlaywrightException ex) when (IsNavigationSideEffect(ex))
+            {
+                _logger.LogDebug(ex, "Contexto do UNO destruido durante submit de {Action}; aguardando navegacao.", action);
+            }
+
+            if (target == "_self")
+            {
+                await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
+                await page.WaitForTimeoutAsync(300);
+            }
+            else
+            {
+                await page.WaitForTimeoutAsync(900);
+            }
+
             return;
         }
 
         throw new InvalidOperationException($"Formulario nao encontrado para enviar {action}.");
+    }
+
+    private static IEnumerable<IFrame> OrderFramesForSubmit(IPage page, string? preferredFieldName)
+    {
+        if (string.IsNullOrWhiteSpace(preferredFieldName))
+        {
+            return page.Frames;
+        }
+
+        return page.Frames
+            .OrderByDescending(frame =>
+                FrameContainsField(frame, preferredFieldName));
+    }
+
+    private static bool FrameContainsField(IFrame frame, string fieldName)
+    {
+        try
+        {
+            return frame.Locator($"input[name='{fieldName}'], textarea[name='{fieldName}'], select[name='{fieldName}']").CountAsync().GetAwaiter().GetResult() > 0;
+        }
+        catch (PlaywrightException ex) when (IsNavigationSideEffect(ex))
+        {
+            return false;
+        }
+    }
+
+    private static bool IsNavigationSideEffect(PlaywrightException ex)
+    {
+        return ex.Message.Contains("Execution context was destroyed", StringComparison.OrdinalIgnoreCase)
+            || ex.Message.Contains("Frame was detached", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<string> GetStableContentAsync(IPage page)
+    {
+        Exception? lastException = null;
+        for (var attempt = 1; attempt <= 10; attempt++)
+        {
+            try
+            {
+                await page.WaitForLoadStateAsync(
+                    LoadState.DOMContentLoaded,
+                    new PageWaitForLoadStateOptions { Timeout = 2_000 });
+                return await page.ContentAsync();
+            }
+            catch (Exception ex) when (ex is PlaywrightException or TimeoutException)
+            {
+                lastException = ex;
+                await page.WaitForTimeoutAsync(500);
+            }
+        }
+
+        throw new InvalidOperationException("Nao foi possivel ler o HTML do UNO apos aguardar a navegacao.", lastException);
+    }
+
+    private static async Task<string> GetAllFramesContentAsync(IPage page)
+    {
+        var parts = new List<string>();
+        foreach (var frame in page.Frames)
+        {
+            try
+            {
+                var content = await frame.ContentAsync();
+                parts.Add(
+                    $"<!-- FRAME name='{WebUtility.HtmlEncode(frame.Name)}' url='{WebUtility.HtmlEncode(frame.Url)}' -->\n{content}");
+            }
+            catch (Exception ex) when (ex is PlaywrightException or TimeoutException)
+            {
+                parts.Add(
+                    $"<!-- FRAME name='{WebUtility.HtmlEncode(frame.Name)}' url='{WebUtility.HtmlEncode(frame.Url)}' unavailable='{WebUtility.HtmlEncode(ex.Message)}' -->");
+            }
+        }
+
+        return string.Join("\n\n", parts);
     }
 
     private async Task<string> SaveFailureArtifactsAsync(IPage page, string name)
@@ -478,7 +611,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             var htmlPath = Path.Combine(directory, $"{timestamp}-{safeName}.html");
             var pngPath = Path.Combine(directory, $"{timestamp}-{safeName}.png");
 
-            await File.WriteAllTextAsync(htmlPath, await page.ContentAsync());
+            await File.WriteAllTextAsync(htmlPath, await GetAllFramesContentAsync(page));
             await page.ScreenshotAsync(new PageScreenshotOptions { Path = pngPath, FullPage = true });
             return htmlPath;
         }
@@ -565,13 +698,18 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
 
     private static void EnsureUnoSessionIsActive(string html)
     {
-        if (html.Contains("Sessão Encerrada", StringComparison.OrdinalIgnoreCase)
-            || html.Contains("Sessao Encerrada", StringComparison.OrdinalIgnoreCase)
-            || html.Contains("login foi utilizado em outra estação", StringComparison.OrdinalIgnoreCase)
-            || html.Contains("login foi utilizado em outra estacao", StringComparison.OrdinalIgnoreCase))
+        if (IsUnoSessionEnded(html))
         {
             throw new UnoSessionEndedException();
         }
+    }
+
+    private static bool IsUnoSessionEnded(string html)
+    {
+        return html.Contains("Sessão Encerrada", StringComparison.OrdinalIgnoreCase)
+            || html.Contains("Sessao Encerrada", StringComparison.OrdinalIgnoreCase)
+            || html.Contains("login foi utilizado em outra estação", StringComparison.OrdinalIgnoreCase)
+            || html.Contains("login foi utilizado em outra estacao", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string CleanHtml(string value)
