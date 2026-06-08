@@ -4,7 +4,7 @@ public sealed class SerialValidationOptions
 {
     public const string SectionName = "SerialValidation";
 
-    public string BaseUrl { get; init; } = "http://uno.controlid.com.br/supplychain/consultar.sh";
+    public string BaseUrl { get; init; } = string.Empty;
 
     public int TimeoutSeconds { get; init; } = 30;
 }

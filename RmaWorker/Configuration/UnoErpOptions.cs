@@ -4,7 +4,7 @@ public sealed class UnoErpOptions
 {
     public const string SectionName = "UnoErp";
 
-    public string BaseUrl { get; set; } = "http://uno.controlid.com.br:8080/Controlid/";
+    public string BaseUrl { get; set; } = string.Empty;
 
     public string Login { get; set; } = string.Empty;
 

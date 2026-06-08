@@ -44,4 +44,4 @@ jobs:
 
       - name: Health check
         run: |
-          curl --fail --retry 5 --retry-delay 3 https://20-59-116-168.sslip.io/api/health
+          curl --fail --retry 5 --retry-delay 3 "${{ secrets.RMA_API_BASE_URL }}/api/health"

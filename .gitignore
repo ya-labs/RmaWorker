@@ -15,3 +15,6 @@ temp/
 **/temp/
 artifacts/
 docs/
+
+RmaChatbot/node_modules/
+RmaChatbot/dist/

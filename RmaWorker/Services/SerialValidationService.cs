@@ -29,6 +29,11 @@ public sealed class SerialValidationService : ISerialValidationService
             throw new ArgumentException("Serial nao pode ser vazio.", nameof(serial));
         }
 
+        if (string.IsNullOrWhiteSpace(_options.BaseUrl))
+        {
+            throw new InvalidOperationException("Configure SerialValidation__BaseUrl para consultar o sistema interno.");
+        }
+
         var normalizedSerial = serial.Trim();
         var requestUri = $"{_options.BaseUrl}?{EscapeSerialQuery(normalizedSerial)}";
         var response = await _httpClient.GetAsync(requestUri, cancellationToken);

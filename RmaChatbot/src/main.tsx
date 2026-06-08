@@ -40,8 +40,8 @@ const initialEmail = `Boa tarde!
 
 Segue solicitação de RMA.
 
-CNPJ: 36045173000173
-NS: 0M0200/013D88
+CNPJ: 11222333000181
+NS: 0A0000/000000
 Produto: iDFace
 Defeito: Não liga
 
@@ -225,7 +225,7 @@ function App() {
 
     try {
       if (eligibleResultsMissingDefect) {
-        throw new Error('Informe o defeito relatado antes de abrir a O.S no UNO.');
+        throw new Error('Informe o defeito relatado antes de abrir a O.S no sistema interno.');
       }
 
       const firstCnpj = cnpj.trim()
@@ -265,7 +265,7 @@ function App() {
         ...failedItems,
       ].join('\n'));
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Falha ao abrir a O.S no UNO.';
+      const message = err instanceof Error ? err.message : 'Falha ao abrir a O.S no sistema interno.';
       setError(message);
     } finally {
       setOpeningServiceOrder(false);
@@ -349,7 +349,7 @@ function App() {
                     id="cnpj-input"
                     value={cnpj}
                     onChange={(event) => setCnpj(event.target.value)}
-                    placeholder="36045173000173"
+                    placeholder="11222333000181"
                     spellCheck="false"
                     aria-label="Informe o CNPJ da revenda"
                   />
@@ -358,7 +358,7 @@ function App() {
                     id="serial-input"
                     value={serial}
                     onChange={(event) => setSerial(event.target.value)}
-                    placeholder={`0M0200/013D88\n0X0200/004245`}
+                    placeholder={`0A0000/000000\n0B0000/000001`}
                     spellCheck="false"
                     aria-label="Informe um ou mais numeros de serie"
                   />
@@ -414,10 +414,10 @@ function App() {
               )}
               {canOpenServiceOrder ? (
                 <div className="service-order-prompt">
-                  <span>Deseja abrir a O.S no UNO?</span>
+                  <span>Deseja abrir a O.S no sistema interno?</span>
                   <button type="button" onClick={handleOpenServiceOrder} disabled={openingServiceOrder || eligibleResultsMissingDefect}>
                     <Send size={18} />
-                    <span>{openingServiceOrder ? 'Abrindo O.S' : 'Abrir O.S no UNO'}</span>
+                    <span>{openingServiceOrder ? 'Abrindo O.S' : 'Abrir O.S'}</span>
                   </button>
                   {serviceOrderStatus ? <p>{serviceOrderStatus}</p> : null}
                 </div>

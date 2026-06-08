@@ -93,11 +93,13 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
                 missingResults);
         }
 
-        if (string.IsNullOrWhiteSpace(_options.Login) || string.IsNullOrWhiteSpace(_options.Password))
+        if (string.IsNullOrWhiteSpace(_options.BaseUrl)
+            || string.IsNullOrWhiteSpace(_options.Login)
+            || string.IsNullOrWhiteSpace(_options.Password))
         {
             return new RmaServiceOrderResponseDto(
                 "UNO_CONFIG_INCOMPLETA",
-                "Configure UnoErp__Login e UnoErp__Password para abrir a O.S no UNO.",
+                "Configure UnoErp__BaseUrl, UnoErp__Login e UnoErp__Password para abrir a O.S no sistema interno.",
                 []);
         }
 
