@@ -136,30 +136,43 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
 
         try
         {
-            await LoginAsync(page);
-
-            var customer = await FindCustomerAsync(page, request.Cnpj!);
-            if (customer is null)
+            for (var attempt = 1; attempt <= 2; attempt++)
             {
-                return new RmaServiceOrderResponseDto(
-                    "CLIENTE_NAO_ENCONTRADO",
-                    "Nao foi encontrado cliente ativo no UNO para o CNPJ informado.",
-                    []);
+                try
+                {
+                    await LoginAsync(page);
+
+                    var customer = await FindCustomerAsync(page, request.Cnpj!);
+                    if (customer is null)
+                    {
+                        return new RmaServiceOrderResponseDto(
+                            "CLIENTE_NAO_ENCONTRADO",
+                            "Nao foi encontrado cliente ativo no UNO para o CNPJ informado.",
+                            []);
+                    }
+
+                    var results = new List<RmaServiceOrderItemResultDto>();
+                    foreach (var item in request.Items)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        results.Add(await OpenItemServiceOrderAsync(page, customer, request.Cnpj!, item));
+                    }
+
+                    var failed = results.Where(result => result.Status != "OS_ABERTA").ToList();
+                    return failed.Count == 0
+                        ? new RmaServiceOrderResponseDto("OS_ABERTA", "O.S aberta no UNO.", results)
+                        : new RmaServiceOrderResponseDto("OS_PARCIAL", "Uma ou mais O.S nao foram abertas no UNO.", results);
+                }
+                catch (UnoSessionEndedException) when (attempt == 1)
+                {
+                    _logger.LogWarning("Sessao do UNO encerrada apos login. Tentando relogar uma vez.");
+                    await page.WaitForTimeoutAsync(1500);
+                }
             }
 
-            var results = new List<RmaServiceOrderItemResultDto>();
-            foreach (var item in request.Items)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                results.Add(await OpenItemServiceOrderAsync(page, customer, request.Cnpj!, item));
-            }
-
-            var failed = results.Where(result => result.Status != "OS_ABERTA").ToList();
-            return failed.Count == 0
-                ? new RmaServiceOrderResponseDto("OS_ABERTA", "O.S aberta no UNO.", results)
-                : new RmaServiceOrderResponseDto("OS_PARCIAL", "Uma ou mais O.S nao foram abertas no UNO.", results);
+            throw new UnoSessionEndedException();
         }
-        catch (Exception ex) when (ex is PlaywrightException or TimeoutException or InvalidOperationException)
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException or InvalidOperationException or UnoSessionEndedException)
         {
             var artifact = await SaveFailureArtifactsAsync(page, "uno-open-os-failure");
             _logger.LogError(ex, "Falha ao abrir O.S no UNO via navegador. Artefato: {Artifact}", artifact);
@@ -554,8 +567,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             || html.Contains("login foi utilizado em outra estação", StringComparison.OrdinalIgnoreCase)
             || html.Contains("login foi utilizado em outra estacao", StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidOperationException(
-                "Sessao do UNO encerrada porque o usuario configurado foi utilizado em outra estacao. Feche outros acessos do usuario UNO ou configure um usuario dedicado para a automacao.");
+            throw new UnoSessionEndedException();
         }
     }
 
@@ -576,4 +588,12 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
     }
 
     private sealed record CustomerLookup(string Code, string Name, string Cnpj);
+
+    private sealed class UnoSessionEndedException : InvalidOperationException
+    {
+        public UnoSessionEndedException()
+            : base("Sessao do UNO encerrada porque o usuario configurado foi utilizado em outra estacao. Feche outros acessos do usuario UNO ou configure um usuario dedicado para a automacao.")
+        {
+        }
+    }
 }
