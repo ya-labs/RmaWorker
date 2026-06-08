@@ -323,10 +323,8 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
 
         await SubmitCurrentFormAsync(page, "osw0001.do?method=gravarDados", "barraControladora", "defeitoRelatado");
         await SubmitCurrentFormAsync(page, "osw0001.do?method=gravarDados&cmd=gravar", "barraControladora", "defeitoRelatado");
-        await page.WaitForTimeoutAsync(2_500);
 
-        var finalHtml = await GetAllFramesContentAsync(page);
-        var serviceOrderCode = ExtractServiceOrderCode(finalHtml);
+        var (serviceOrderCode, finalHtml) = await WaitForServiceOrderCodeAsync(page);
         if (string.IsNullOrWhiteSpace(serviceOrderCode))
         {
             var artifact = await SaveFailureArtifactsAsync(page, $"uno-os-not-confirmed-{serialValidation.Serial.Replace('/', '-')}");
@@ -406,6 +404,24 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         }
 
         return match.Groups["code"].Value;
+    }
+
+    private static async Task<(string Code, string Html)> WaitForServiceOrderCodeAsync(IPage page)
+    {
+        var html = string.Empty;
+        for (var attempt = 1; attempt <= 30; attempt++)
+        {
+            html = await GetAllFramesContentAsync(page);
+            var serviceOrderCode = ExtractServiceOrderCode(html);
+            if (!string.IsNullOrWhiteSpace(serviceOrderCode))
+            {
+                return (serviceOrderCode, html);
+            }
+
+            await page.WaitForTimeoutAsync(500);
+        }
+
+        return (string.Empty, html);
     }
 
     private async Task FillByNameAsync(IPage page, string name, string value)
