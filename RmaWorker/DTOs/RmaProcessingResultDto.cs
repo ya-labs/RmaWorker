@@ -1,7 +1,7 @@
 namespace RmaWorker.DTOs;
 
 public sealed record RmaProcessingResultDto(
-    OllamaRmaExtractionDto Extraction,
+    RmaExtractionDto Extraction,
     string Status,
     string? Reason,
     IReadOnlyCollection<string> MissingFields,

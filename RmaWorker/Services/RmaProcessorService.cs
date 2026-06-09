@@ -16,60 +16,63 @@ public sealed class RmaProcessorService : IRmaProcessorService
         WriteIndented = false
     };
 
-    private readonly IOllamaService _ollamaService;
-    private readonly ICnpjValidator _cnpjValidator;
     private readonly ISerialValidationService _serialValidationService;
     private readonly IInvoicePdfService _invoicePdfService;
     private readonly IEmailResponseService _emailResponseService;
-    private readonly IEmailBodyCleaner _emailBodyCleaner;
-    private readonly IRmaTechnicalClassifier _technicalClassifier;
+    private readonly IUnoServiceOrderService _unoServiceOrderService;
     private readonly InvoiceOptions _invoiceOptions;
     private readonly ILogger<RmaProcessorService> _logger;
 
     public RmaProcessorService(
-        IOllamaService ollamaService,
-        ICnpjValidator cnpjValidator,
         ISerialValidationService serialValidationService,
         IInvoicePdfService invoicePdfService,
         IEmailResponseService emailResponseService,
-        IEmailBodyCleaner emailBodyCleaner,
-        IRmaTechnicalClassifier technicalClassifier,
+        IUnoServiceOrderService unoServiceOrderService,
         IOptions<InvoiceOptions> invoiceOptions,
         ILogger<RmaProcessorService> logger)
     {
-        _ollamaService = ollamaService;
-        _cnpjValidator = cnpjValidator;
         _serialValidationService = serialValidationService;
         _invoicePdfService = invoicePdfService;
         _emailResponseService = emailResponseService;
-        _emailBodyCleaner = emailBodyCleaner;
-        _technicalClassifier = technicalClassifier;
+        _unoServiceOrderService = unoServiceOrderService;
         _invoiceOptions = invoiceOptions.Value;
         _logger = logger;
     }
 
-    public async Task ProcessAsync(EmailMessageDto message, CancellationToken cancellationToken)
-    {
-        var response = await AnalyzeAsync(message, cancellationToken);
-        await _emailResponseService.ReplyProcessingResultsAsync(message, response.Results, cancellationToken);
-    }
-
     public async Task<RmaAssistantResponseDto> GenerateFromSerialAsync(
-        string? serial,
-        IReadOnlyCollection<string>? serials,
+        RmaSerialRequestDto request,
         CancellationToken cancellationToken)
     {
-        var normalizedSerials = NormalizeSerials(serial, serials);
-        var results = new List<RmaProcessingResultDto>();
+        var normalizedSerials = NormalizeSerials(request.Serial, request.Serials);
+        var missingFields = GetMissingRequestFields(request, normalizedSerials);
+        if (missingFields.Count > 0)
+        {
+            return new RmaAssistantResponseDto(
+                "DADOS_AUSENTES",
+                false,
+                $"Informe os campos obrigatorios: {string.Join(", ", missingFields)}.",
+                []);
+        }
 
+        var customerValidation = await _unoServiceOrderService.ValidateCustomerAsync(request.Cnpj, cancellationToken);
+        if (!customerValidation.Exists)
+        {
+            return new RmaAssistantResponseDto(
+                customerValidation.Status ?? "CLIENTE_NAO_ENCONTRADO",
+                false,
+                customerValidation.Message ?? "Nao foi possivel validar o CNPJ no UNO.",
+                []);
+        }
+
+        var results = new List<RmaProcessingResultDto>();
         foreach (var normalizedSerial in normalizedSerials)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var extraction = new OllamaRmaExtractionDto(
+            var extraction = new RmaExtractionDto(
                 normalizedSerial,
-                null,
-                null,
+                customerValidation.Cnpj ?? request.Cnpj,
+                request.DefectReported,
                 null,
                 null,
                 false,
@@ -81,111 +84,15 @@ public sealed class RmaProcessorService : IRmaProcessorService
             results.Add(await BuildEligibleResultFromSerialAsync(
                 $"serial-{Guid.NewGuid():N}",
                 extraction,
-                null,
                 cancellationToken));
         }
 
         return _emailResponseService.BuildProcessingResponse(results);
     }
 
-    public async Task<RmaAssistantResponseDto> AnalyzeAsync(EmailMessageDto message, CancellationToken cancellationToken)
-    {
-        PrintEmail(message);
-
-        var currentMessageBody = _emailBodyCleaner.ExtractCurrentMessage(message.Body);
-        if (!string.Equals(currentMessageBody, message.Body, StringComparison.Ordinal))
-        {
-            _logger.LogInformation("Historico removido do email {MessageId} antes da extracao.", message.Id);
-        }
-
-        if (string.IsNullOrWhiteSpace(currentMessageBody))
-        {
-            _logger.LogInformation("Email {MessageId} ignorado porque o corpo atual ficou vazio apos limpeza.", message.Id);
-            return new RmaAssistantResponseDto(
-                "IGNORADO",
-                false,
-                "O corpo atual do e-mail ficou vazio após a limpeza do histórico.",
-                []);
-        }
-
-        var startedAt = DateTimeOffset.UtcNow;
-        var extractions = await _ollamaService.ExtractRmaDataAsync(currentMessageBody, cancellationToken);
-        _logger.LogInformation(
-            "Extracao IA concluida em {ElapsedMs}ms para o email {MessageId}.",
-            (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds,
-            message.Id);
-        var extractionJson = JsonSerializer.Serialize(extractions, JsonOptions);
-
-        _logger.LogInformation(
-            "Dados extraidos pela IA para o email {MessageId}: {ExtractionJson}",
-            message.Id,
-            extractionJson);
-
-        Console.WriteLine("---------- EXTRACAO IA ----------");
-        Console.WriteLine(extractionJson);
-        Console.WriteLine("---------------------------------");
-
-        var results = new List<RmaProcessingResultDto>();
-        foreach (var extraction in extractions)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            results.Add(await ProcessExtractionAsync(message.Id, extraction, currentMessageBody, cancellationToken));
-        }
-
-        _logger.LogInformation(
-            "Analise completa concluida em {ElapsedMs}ms para o email {MessageId}.",
-            (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds,
-            message.Id);
-
-        return _emailResponseService.BuildProcessingResponse(results);
-    }
-
-    private async Task<RmaProcessingResultDto> ProcessExtractionAsync(
-        string messageId,
-        OllamaRmaExtractionDto extraction,
-        string currentMessageBody,
-        CancellationToken cancellationToken)
-    {
-        var missingFields = GetMissingFields(extraction);
-        if (missingFields.Count > 0)
-        {
-            var reason = $"Dados obrigatorios ausentes: {string.Join(", ", missingFields)}";
-            LogNotEligible(messageId, reason);
-            return new RmaProcessingResultDto(
-                extraction,
-                "DADOS_AUSENTES",
-                reason,
-                missingFields,
-                null,
-                null,
-                null,
-                false,
-                null);
-        }
-
-        if (!_cnpjValidator.IsValid(extraction.Cnpj))
-        {
-            const string reason = "CNPJ em formato invalido.";
-            LogNotEligible(messageId, reason);
-            return new RmaProcessingResultDto(
-                extraction,
-                "CNPJ_INVALIDO",
-                reason,
-                ["CNPJ válido"],
-                null,
-                null,
-                null,
-                false,
-                null);
-        }
-
-        return await BuildEligibleResultFromSerialAsync(messageId, extraction, currentMessageBody, cancellationToken);
-    }
-
     private async Task<RmaProcessingResultDto> BuildEligibleResultFromSerialAsync(
         string messageId,
-        OllamaRmaExtractionDto extraction,
-        string? currentMessageBody,
+        RmaExtractionDto extraction,
         CancellationToken cancellationToken)
     {
         var serialStartedAt = DateTimeOffset.UtcNow;
@@ -251,27 +158,6 @@ public sealed class RmaProcessorService : IRmaProcessorService
             Produto = string.IsNullOrWhiteSpace(extraction.Produto) ? serialValidation.ProductDescription : extraction.Produto
         };
 
-        var technicalClassification = currentMessageBody is null
-            ? new RmaTechnicalClassificationDto(
-                "APTO_PARA_ORIENTACAO_NF",
-                "Fluxo manual por serial sem validacao tecnica.",
-                [])
-            : _technicalClassifier.Classify(extraction, currentMessageBody);
-        if (currentMessageBody is not null && technicalClassification.Status != "APTO_PARA_ORIENTACAO_NF")
-        {
-            LogNotEligible(messageId, technicalClassification.Reason);
-            return new RmaProcessingResultDto(
-                extraction,
-                technicalClassification.Status,
-                technicalClassification.Reason,
-                [],
-                technicalClassification,
-                serialValidation,
-                null,
-                false,
-                null);
-        }
-
         InvoiceDataDto? invoiceData = null;
         if (_invoiceOptions.EnablePdfExtraction
             && !string.IsNullOrWhiteSpace(serialValidation.InvoiceLink)
@@ -296,6 +182,11 @@ public sealed class RmaProcessorService : IRmaProcessorService
         var isUnderWarranty = warrantyUntil.HasValue
             && warrantyUntil.Value >= DateOnly.FromDateTime(DateTime.Today);
 
+        var technicalClassification = new RmaTechnicalClassificationDto(
+            "APTO_PARA_ORIENTACAO_NF",
+            "Fluxo estruturado por formulario.",
+            []);
+
         var validationResult = new RmaValidationResultDto(
             Status: "APTO",
             Reason: null,
@@ -308,8 +199,7 @@ public sealed class RmaProcessorService : IRmaProcessorService
         var invoiceJson = JsonSerializer.Serialize(invoiceData, JsonOptions);
         var validationJson = JsonSerializer.Serialize(validationResult, JsonOptions);
         _logger.LogInformation(
-            "Email {MessageId} apto para RMA. Em garantia: {IsUnderWarranty} | Validade garantia: {WarrantyUntil} | Dados UNO: {SerialValidationJson} | Dados NF: {InvoiceJson}",
-            messageId,
+            "Item apto para RMA. Em garantia: {IsUnderWarranty} | Validade garantia: {WarrantyUntil} | Dados UNO: {SerialValidationJson} | Dados NF: {InvoiceJson}",
             isUnderWarranty,
             warrantyUntil,
             serialJson,
@@ -332,21 +222,23 @@ public sealed class RmaProcessorService : IRmaProcessorService
             warrantyUntil);
     }
 
-    private static IReadOnlyCollection<string> GetMissingFields(OllamaRmaExtractionDto extraction)
+    private static IReadOnlyCollection<string> GetMissingRequestFields(
+        RmaSerialRequestDto request,
+        IReadOnlyCollection<string> normalizedSerials)
     {
         var missingFields = new List<string>();
 
-        if (!extraction.PossuiSerial || string.IsNullOrWhiteSpace(extraction.Serial))
+        if (normalizedSerials.Count == 0)
         {
             missingFields.Add("serial");
         }
 
-        if (!extraction.PossuiCnpj || string.IsNullOrWhiteSpace(extraction.Cnpj))
+        if (string.IsNullOrWhiteSpace(request.Cnpj))
         {
             missingFields.Add("cnpj");
         }
 
-        if (!extraction.PossuiDefeito || string.IsNullOrWhiteSpace(extraction.Defeito))
+        if (string.IsNullOrWhiteSpace(request.DefectReported))
         {
             missingFields.Add("defeito");
         }
@@ -384,23 +276,11 @@ public sealed class RmaProcessorService : IRmaProcessorService
 
     private void LogNotEligible(string messageId, string reason)
     {
-        _logger.LogInformation("Email {MessageId} nao apto para RMA. Motivo: {Reason}", messageId, reason);
+        _logger.LogInformation("Item {MessageId} nao apto para RMA. Motivo: {Reason}", messageId, reason);
 
         Console.WriteLine("---------- VALIDACAO RMA ----------");
         Console.WriteLine("Status: NAO APTO");
         Console.WriteLine($"Motivo: {reason}");
         Console.WriteLine("-----------------------------------");
-    }
-
-    private static void PrintEmail(EmailMessageDto message)
-    {
-        Console.WriteLine("---------- EMAIL RMA ----------");
-        Console.WriteLine($"Id: {message.Id}");
-        Console.WriteLine($"De: {message.From}");
-        Console.WriteLine($"Assunto: {message.Subject}");
-        Console.WriteLine($"Recebido em: {message.ReceivedAt}");
-        Console.WriteLine("Conteudo:");
-        Console.WriteLine(message.Body);
-        Console.WriteLine("-------------------------------");
     }
 }
