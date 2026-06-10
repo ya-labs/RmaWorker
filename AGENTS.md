@@ -21,7 +21,9 @@ O objetivo e manter consistencia de codigo, regras de negocio, seguranca e quali
 
 ## Contexto do Projeto
 
-O RMIA automatiza parte do processo de RMA e abertura de O.S no UNO.
+O nome do projeto/repositorio e `RmaWorker`.
+
+O `RmaWorker` automatiza parte do processo de RMA e abertura de O.S no UNO.
 
 - Backend principal: `RmaWorker`, em .NET 8.
 - Frontend principal: `RmaChatbot`, em React/Vite.
@@ -111,10 +113,11 @@ Antes de gerar qualquer template:
 
 ### Envio de Pecas
 
-Codigo de operacao:
+Codigos de operacao:
 
 ```text
-7 - Remessa de pecas
+7 - Garantia - Remessa de pecas
+8 - Fora de garantia - Remessa de pecas
 ```
 
 Campos obrigatorios:
@@ -149,6 +152,12 @@ Gerar template de resposta
 ```
 
 O template de envio de pecas depende do numero da O.S e nunca deve ser gerado antes da abertura da O.S.
+
+A garantia deve ser verificada pela data da nota retornada na consulta de serial no UNO:
+
+- dentro de 1 ano: usar codigo `7`;
+- fora de 1 ano: usar codigo `8`;
+- se o checkbox de garantia manual estiver marcado: sempre usar codigo `7`.
 
 Envio de pecas deve alterar `codStatus` no UNO para:
 

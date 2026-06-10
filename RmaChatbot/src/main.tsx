@@ -511,17 +511,16 @@ function App() {
                   spellCheck="false"
                   aria-label="Informe o defeito relatado"
                 />
-                {requestMode === 'maintenance' ? (
-                  <label className="checkbox-row" htmlFor="maintenance-warranty">
-                    <input
-                      id="maintenance-warranty"
-                      type="checkbox"
-                      checked={maintenanceInWarranty}
-                      onChange={(event) => setMaintenanceInWarranty(event.target.checked)}
-                    />
-                    <span>Manutencao em garantia liberada manualmente</span>
-                  </label>
-                ) : (
+                <label className="checkbox-row" htmlFor="maintenance-warranty">
+                  <input
+                    id="maintenance-warranty"
+                    type="checkbox"
+                    checked={maintenanceInWarranty}
+                    onChange={(event) => setMaintenanceInWarranty(event.target.checked)}
+                  />
+                  <span>{requestMode === 'maintenance' ? 'Manutencao' : 'Envio de pecas'} em garantia liberada manualmente</span>
+                </label>
+                {requestMode === 'parts' ? (
                   <>
                     <label htmlFor="part-input">Peca a ser enviada</label>
                     <input
@@ -533,7 +532,7 @@ function App() {
                       aria-label="Informe a peca a ser enviada"
                     />
                   </>
-                )}
+                ) : null}
               </div>
             </div>
             <div className="actions">
