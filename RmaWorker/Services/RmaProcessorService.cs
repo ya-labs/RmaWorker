@@ -43,6 +43,7 @@ public sealed class RmaProcessorService : IRmaProcessorService
         RmaSerialRequestDto request,
         CancellationToken cancellationToken)
     {
+        var isExchangeRequest = string.Equals(request.RequestType, "exchange", StringComparison.OrdinalIgnoreCase);
         var normalizedSerials = NormalizeSerials(request.Serial, request.Serials);
         var missingFields = GetMissingRequestFields(request, normalizedSerials);
         if (missingFields.Count > 0)
@@ -84,15 +85,21 @@ public sealed class RmaProcessorService : IRmaProcessorService
             results.Add(await BuildEligibleResultFromSerialAsync(
                 $"serial-{Guid.NewGuid():N}",
                 extraction,
+                isExchangeRequest ? 60 : 365,
+                request.MaintenanceInWarranty,
                 cancellationToken));
         }
 
-        return _emailResponseService.BuildProcessingResponse(results);
+        return isExchangeRequest
+            ? _emailResponseService.BuildExchangeResponse(results)
+            : _emailResponseService.BuildProcessingResponse(results);
     }
 
     private async Task<RmaProcessingResultDto> BuildEligibleResultFromSerialAsync(
         string messageId,
         RmaExtractionDto extraction,
+        int warrantyDays,
+        bool forceWarranty,
         CancellationToken cancellationToken)
     {
         var serialStartedAt = DateTimeOffset.UtcNow;
@@ -178,8 +185,8 @@ public sealed class RmaProcessorService : IRmaProcessorService
             _logger.LogInformation("Extracao de PDF desabilitada por configuracao.");
         }
 
-        var warrantyUntil = serialValidation.InvoiceIssuedAt?.AddYears(1);
-        var isUnderWarranty = warrantyUntil.HasValue
+        var warrantyUntil = serialValidation.InvoiceIssuedAt?.AddDays(warrantyDays);
+        var isUnderWarranty = forceWarranty || warrantyUntil.HasValue
             && warrantyUntil.Value >= DateOnly.FromDateTime(DateTime.Today);
 
         var technicalClassification = new RmaTechnicalClassificationDto(

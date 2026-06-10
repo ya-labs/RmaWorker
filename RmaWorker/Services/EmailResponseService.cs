@@ -65,6 +65,27 @@ public sealed class EmailResponseService : IEmailResponseService
             results);
     }
 
+    public RmaAssistantResponseDto BuildExchangeResponse(IReadOnlyCollection<RmaProcessingResultDto> results)
+    {
+        var eligibleResults = results
+            .Where(result => result.Status == "APTO" && result.SerialValidation is not null)
+            .ToList();
+        var pendingResults = results
+            .Where(result => result.Status != "APTO")
+            .ToList();
+
+        if (eligibleResults.Count > 0)
+        {
+            return new RmaAssistantResponseDto(
+                "APTO",
+                true,
+                BuildExchangeEligibleHtml(eligibleResults, pendingResults),
+                results);
+        }
+
+        return BuildProcessingResponse(results);
+    }
+
     private static string BuildMissingDataBody(IReadOnlyCollection<string> missingFields)
     {
         return $"""
@@ -85,6 +106,54 @@ public sealed class EmailResponseService : IEmailResponseService
 
             Fico no aguardo.
             """;
+    }
+
+    private static string BuildExchangeEligibleHtml(
+        IReadOnlyCollection<RmaProcessingResultDto> eligibleResults,
+        IReadOnlyCollection<RmaProcessingResultDto> pendingResults)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine("""<div style="font-family: Arial, Helvetica, sans-serif; font-size: 12px; line-height: 1.25; color: #000;">""");
+        builder.AppendLine("""<span style="background-color: #00ffff; font-weight: 700;">Segue informacoes para abertura do RMA e elaboracao da nota de Remessa para Troca</span><br><br>""");
+        builder.AppendLine("""<span style="color: #ff0000; font-weight: 700;">Atencao:</span><br><br>""");
+        builder.AppendLine("""<span style="color: #ff0000;">1)</span> O RMA ainda <strong>NAO</strong> esta aberto! Favor encaminhar nota fiscal para o e-mail ( <a href="mailto:rma-notas@controlid.com.br" style="color: #0000ee; text-decoration: underline;">rma-notas@controlid.com.br</a> )<br>""");
+        builder.AppendLine("""<span style="color: #ff0000;">2)</span> Nunca enviar equipamentos ou pecas sem um numero de RMA aberto (os produtos serao devolvidos ou sofrerao atrasos expressivos)<br>""");
+        builder.AppendLine("""<span style="color: #ff0000;">3)</span> Destacar o numero de RMA no pacote enviado de forma clara<br><br>""");
+        builder.AppendLine("Natureza da operacao : Remessa para troca em garantia<br><br>");
+        builder.AppendLine("""<span style="background-color: #00ffff; font-weight: 700;">DESTINATARIO:</span><br><br>""");
+        builder.AppendLine("Razao Social : CONTROL ID IND. COM. DE HARDWARE E SERV. DE TECNOLOGIA LTDA<br>");
+        builder.AppendLine("CNPJ: 08.238.299/0003-90<br>");
+        builder.AppendLine("Inscricao Estadual 002531372.00-90<br>");
+        builder.AppendLine("Endereco: RUA JOSEPHA GOMES DE SOUZA , 298 - GALPAO 02 e 03<br>");
+        builder.AppendLine("BAIRRO : Distrito industrial Pires II<br>");
+        builder.AppendLine("CEP: 37640-000<br>");
+        builder.AppendLine("Municipio : Extrema - MG.<br>");
+        builder.AppendLine("Telefone Control (11) 3059-9900<br><br>");
+        builder.AppendLine("""<span style="background-color: #00ffff; font-weight: 700;">Valores que devem constar em Calculo do Imposto e em seus devidos campos</span><br><br>""");
+        builder.AppendLine("RATEIO DO FRETE (se houver), <strong>ICMS</strong> (se houver), IPI (se houver) e <strong>ICMS ST</strong> (se houver)<br><br>");
+        builder.AppendLine("O valor do <strong>FRETE</strong> deve ser somado na base de calculo dos impostos.<br><br>");
+        builder.AppendLine("Lembrando que o valor do <strong>FRETE, IPI e ST</strong> devem ser somados ao valor total da nota, sendo assim menciona-los no campo correto do imposto.<br><br>");
+        builder.AppendLine("Obs: Caso a empresa tenha como forma de tributacao o Simples Nacional e nao consiga mencionar os impostos em seus devidos campos, favor mencionar a base de calculo, aliquota e valor do <strong>ICMS</strong> em Dados Adicionais e o valor do <strong>IPI</strong> em outras despesas acessorias e sua aliquota em dados adicionais.<br><br>");
+
+        foreach (var result in eligibleResults)
+        {
+            AppendExchangeProduct(builder, result);
+        }
+
+        builder.AppendLine("""<span style="background-color: #ffff00;">OBS: Apos 30 dias sem resposta referente ao envio da Nota fiscal conserto/troca, o RMA em aberto para tal processo sera encerrada e caso deseje manutencao/troca do equipamento, sera necessario nova abertura do mesmo.</span>""");
+
+        if (pendingResults.Count > 0)
+        {
+            builder.AppendLine("<br><br>");
+            builder.AppendLine("""<span style="color: #ff0000; font-weight: 700;">Solicitacoes que precisam de correcao:</span><br>""");
+            foreach (var result in pendingResults)
+            {
+                AppendPendingResultHtml(builder, result);
+            }
+        }
+
+        builder.AppendLine("</div>");
+        return builder.ToString();
     }
 
     private static string BuildRmaEligibleHtml(
@@ -157,6 +226,22 @@ public sealed class EmailResponseService : IEmailResponseService
         builder.AppendLine($"<strong>N SERIE EQUIPAMENTO:</strong> {Html(result.SerialValidation?.Serial)}<br>");
         builder.AppendLine($"<strong>N NOTA DE VENDA:</strong> {Html(ValueOrInvoiceFallback(result.Invoice?.Number))}<br>");
         builder.AppendLine($"<strong>DATA DA NOTA:</strong> {Html(ValueOrInvoiceFallback(FormatDate(result.Invoice?.IssuedAt ?? result.SerialValidation?.InvoiceIssuedAt)))}<br><br>");
+    }
+
+    private static void AppendExchangeProduct(StringBuilder builder, RmaProcessingResultDto result)
+    {
+        builder.AppendLine("""<span style="background-color: #00ffff; font-weight: 700;">Informacoes que devem constar em Dados dos Produtos/Servicos</span><br><br>""");
+        builder.AppendLine($"NCM: {Html(ValueOrInvoiceFallback(result.Invoice?.Ncm))}<br>");
+        builder.AppendLine("CFOP: 5949 para Empresas dentro do Estado de MG<br>");
+        builder.AppendLine("CFOP: 6949 para Empresas fora do Estado de MG<br>");
+        builder.AppendLine($"Descricao do produto: {Html(result.SerialValidation?.ProductDescription)}<br>");
+        builder.AppendLine($"Valor unitario: {Html(ValueOrInvoiceFallback(FormatCurrency(result.Invoice?.UnitValue)))}<br><br>");
+        builder.AppendLine("""<span style="background-color: #00ffff; font-weight: 700;">Informacoes que devem constar no campo Dados Adicionais:</span><br><br>""");
+        builder.AppendLine($"N NOTA DE VENDA: {Html(ValueOrInvoiceFallback(result.Invoice?.Number))}<br>");
+        builder.AppendLine($"Data de emissao da nota de venda: {Html(ValueOrInvoiceFallback(FormatDate(result.Invoice?.IssuedAt ?? result.SerialValidation?.InvoiceIssuedAt)))}<br>");
+        builder.AppendLine($"Numero de serie do equipamento: {Html(result.SerialValidation?.Serial)}<br>");
+        builder.AppendLine("Aliquota do ICMS: \"x\"%<br>");
+        builder.AppendLine("Aliquota do IPI: \"x\"%<br><br>");
     }
 
     private static void AppendPendingResultHtml(StringBuilder builder, RmaProcessingResultDto result)
