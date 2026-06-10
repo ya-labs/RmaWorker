@@ -3,16 +3,9 @@ using RmaWorker.DTOs;
 using RmaWorker.Interfaces;
 using RmaWorker.Services;
 using RmaWorker.Validators;
-using RmaWorker.Workers;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.Configure<GmailOptions>(
-    builder.Configuration.GetSection(GmailOptions.SectionName));
-builder.Services.Configure<WorkerOptions>(
-    builder.Configuration.GetSection(WorkerOptions.SectionName));
-builder.Services.Configure<OllamaOptions>(
-    builder.Configuration.GetSection(OllamaOptions.SectionName));
 builder.Services.Configure<SerialValidationOptions>(
     builder.Configuration.GetSection(SerialValidationOptions.SectionName));
 builder.Services.Configure<InvoiceOptions>(
@@ -45,23 +38,6 @@ builder.Services.AddCors(options =>
     });
 });
 
-builder.Services.AddSingleton<IGmailService, GmailService>();
-builder.Services.AddSingleton<IOllamaService>(serviceProvider =>
-{
-    var options = serviceProvider
-        .GetRequiredService<Microsoft.Extensions.Options.IOptions<OllamaOptions>>()
-        .Value;
-    var logger = serviceProvider.GetRequiredService<ILogger<OllamaService>>();
-    var httpClient = new HttpClient
-    {
-        BaseAddress = new Uri(options.BaseUrl)
-    };
-
-    return new OllamaService(
-        httpClient,
-        serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<OllamaOptions>>(),
-        logger);
-});
 builder.Services.AddSingleton<ISerialValidationService>(serviceProvider =>
 {
     var options = serviceProvider
@@ -94,8 +70,6 @@ builder.Services.AddSingleton<IInvoicePdfService>(serviceProvider =>
         serviceProvider.GetRequiredService<ILogger<InvoicePdfService>>());
 });
 builder.Services.AddSingleton<ICnpjValidator, CnpjValidator>();
-builder.Services.AddSingleton<IEmailBodyCleaner, EmailBodyCleaner>();
-builder.Services.AddSingleton<IRmaTechnicalClassifier, RmaTechnicalClassifier>();
 builder.Services.AddSingleton<IRmaProcessorService, RmaProcessorService>();
 builder.Services.AddSingleton<IUnoServiceOrderService>(serviceProvider =>
     new UnoServiceOrderService(
@@ -104,39 +78,11 @@ builder.Services.AddSingleton<IUnoServiceOrderService>(serviceProvider =>
         serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<UnoErpOptions>>(),
         serviceProvider.GetRequiredService<ILogger<UnoServiceOrderService>>()));
 
-if (builder.Configuration.GetValue("Worker:EnableEmailWorker", false))
-{
-    builder.Services.AddHostedService<RmaEmailWorker>();
-}
-
 var app = builder.Build();
 
 app.UseCors("RmaChatbot");
 
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }));
-
-app.MapPost("/api/rma/analyze", async (
-    RmaAssistantRequestDto request,
-    IRmaProcessorService processor,
-    CancellationToken cancellationToken) =>
-{
-    if (string.IsNullOrWhiteSpace(request.EmailBody))
-    {
-        return Results.BadRequest(new { error = "Informe o corpo do e-mail para analise." });
-    }
-
-    var message = new EmailMessageDto(
-        Id: $"manual-{Guid.NewGuid():N}",
-        ThreadId: null,
-        MessageIdHeader: null,
-        From: request.From,
-        Subject: request.Subject ?? "Analise manual RMA",
-        ReceivedAt: DateTimeOffset.Now,
-        Body: request.EmailBody);
-
-    var response = await processor.AnalyzeAsync(message, cancellationToken);
-    return Results.Ok(response);
-});
 
 app.MapPost("/api/rma/generate-by-serial", async (
     RmaSerialRequestDto request,
@@ -149,7 +95,7 @@ app.MapPost("/api/rma/generate-by-serial", async (
         return Results.BadRequest(new { error = "Informe pelo menos um numero de serie para gerar o e-mail." });
     }
 
-    var response = await processor.GenerateFromSerialAsync(request.Serial, request.Serials, cancellationToken);
+    var response = await processor.GenerateFromSerialAsync(request, cancellationToken);
     return Results.Ok(response);
 });
 

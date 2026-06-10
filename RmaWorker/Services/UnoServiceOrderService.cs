@@ -14,6 +14,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
     private const int CostCenterCode = 14;
     private const int WarrantyCategoryCode = 2;
     private const int OutOfWarrantyCategoryCode = 5;
+    private const int PartsShipmentCategoryCode = 7;
     private const int AttendantCode = 906;
     private const int Quantity = 1;
 
@@ -61,6 +62,12 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             return new RmaServiceOrderResponseDto("DADOS_AUSENTES", "Informe pelo menos um numero de serie para abrir a O.S.", []);
         }
 
+        var isPartsShipmentRequest = string.Equals(request.RequestType, "parts", StringComparison.OrdinalIgnoreCase);
+        if (isPartsShipmentRequest && string.IsNullOrWhiteSpace(request.PartToSend))
+        {
+            return new RmaServiceOrderResponseDto("PECA_AUSENTE", "Informe a peca a ser enviada antes de abrir a O.S no UNO.", []);
+        }
+
         if (string.IsNullOrWhiteSpace(request.Cnpj) || !_cnpjValidator.IsValid(request.Cnpj))
         {
             return new RmaServiceOrderResponseDto("CNPJ_INVALIDO", "Informe um CNPJ valido para buscar a revenda no UNO.", []);
@@ -81,6 +88,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
                     item.DefectReported,
                     false,
                     null,
+                    null,
                     false,
                     "DEFEITO_AUSENTE",
                     "Informe o defeito relatado antes de abrir a O.S no UNO.",
@@ -93,13 +101,12 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
                 missingResults);
         }
 
-        if (string.IsNullOrWhiteSpace(_options.BaseUrl)
-            || string.IsNullOrWhiteSpace(_options.Login)
-            || string.IsNullOrWhiteSpace(_options.Password))
+        var configurationError = GetConfigurationError();
+        if (configurationError is not null)
         {
             return new RmaServiceOrderResponseDto(
                 "UNO_CONFIG_INCOMPLETA",
-                "Configure UnoErp__BaseUrl, UnoErp__Login e UnoErp__Password para abrir a O.S no sistema interno.",
+                configurationError,
                 []);
         }
 
@@ -107,6 +114,79 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         try
         {
             return await OpenWithBrowserAsync(request, cancellationToken);
+        }
+        finally
+        {
+            BrowserLock.Release();
+        }
+    }
+
+    public async Task<UnoCustomerValidationDto> ValidateCustomerAsync(
+        string? cnpj,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(cnpj) || !_cnpjValidator.IsValid(cnpj))
+        {
+            return new UnoCustomerValidationDto(
+                false,
+                null,
+                null,
+                cnpj,
+                "CNPJ_INVALIDO",
+                "Informe um CNPJ valido para buscar a revenda no UNO.");
+        }
+
+        var configurationError = GetConfigurationError();
+        if (configurationError is not null)
+        {
+            return new UnoCustomerValidationDto(
+                false,
+                null,
+                null,
+                cnpj,
+                "UNO_CONFIG_INCOMPLETA",
+                configurationError);
+        }
+
+        await BrowserLock.WaitAsync(cancellationToken);
+        try
+        {
+            using var playwright = await Playwright.CreateAsync();
+            await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+            {
+                Headless = _options.BrowserHeadless,
+                SlowMo = _options.BrowserSlowMoMs,
+                Args = ["--no-sandbox", "--disable-dev-shm-usage"]
+            });
+
+            var context = await browser.NewContextAsync(new BrowserNewContextOptions
+            {
+                IgnoreHTTPSErrors = true,
+                ViewportSize = new ViewportSize { Width = 1366, Height = 900 }
+            });
+            await context.RouteAsync("**/desktop.do?method=logout**", async route => await route.AbortAsync());
+
+            var page = await context.NewPageAsync();
+            page.SetDefaultTimeout(_options.TimeoutSeconds * 1000);
+            page.SetDefaultNavigationTimeout(_options.TimeoutSeconds * 1000);
+
+            try
+            {
+                await LoginAsync(page);
+                var customer = await FindCustomerAsync(page, cnpj);
+                return customer is null
+                    ? new UnoCustomerValidationDto(false, null, null, cnpj, "CLIENTE_NAO_ENCONTRADO", "Nao foi encontrado cliente ativo no UNO para o CNPJ informado.")
+                    : new UnoCustomerValidationDto(true, customer.Code, customer.Name, customer.Cnpj, "CLIENTE_ENCONTRADO", null);
+            }
+            finally
+            {
+                await context.CloseAsync();
+            }
+        }
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException or InvalidOperationException)
+        {
+            _logger.LogError(ex, "Falha ao validar cliente no UNO.");
+            return new UnoCustomerValidationDto(false, null, null, cnpj, "UNO_ERRO", $"Falha ao validar cliente no UNO: {ex.Message}");
         }
         finally
         {
@@ -158,7 +238,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
                     foreach (var item in request.Items)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
-                        results.Add(await OpenItemServiceOrderAsync(page, customer, request.Cnpj!, item));
+                        results.Add(await OpenItemServiceOrderAsync(page, customer, request, item));
                     }
 
                     var failed = results.Where(result => result.Status != "OS_ABERTA").ToList();
@@ -274,19 +354,30 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
     private async Task<RmaServiceOrderItemResultDto> OpenItemServiceOrderAsync(
         IPage page,
         CustomerLookup customer,
-        string cnpj,
+        RmaServiceOrderRequestDto request,
         RmaServiceOrderItemRequestDto item)
     {
+        var cnpj = request.Cnpj!;
+        var isPartsShipment = string.Equals(request.RequestType, "parts", StringComparison.OrdinalIgnoreCase);
+        var categoryCodeOverride = isPartsShipment ? PartsShipmentCategoryCode : (int?)null;
         var serialValidation = await _serialValidationService.ValidateAsync(item.Serial, CancellationToken.None);
         if (!serialValidation.Exists)
         {
-            return BuildResult(item.Serial, cnpj, customer.Name, null, null, item.DefectReported, false, null, false, "SERIAL_NAO_ENCONTRADO", "Serial nao encontrado na consulta atual do UNO.", null);
+            return BuildResult(item.Serial, cnpj, customer.Name, null, null, item.DefectReported, false, null, categoryCodeOverride, false, "SERIAL_NAO_ENCONTRADO", "Serial nao encontrado na consulta atual do UNO.", null);
         }
 
         var warrantyUntil = serialValidation.InvoiceIssuedAt?.AddYears(1);
         var isUnderWarranty = warrantyUntil.HasValue && warrantyUntil.Value >= DateOnly.FromDateTime(DateTime.Today);
-        var categoryCode = isUnderWarranty ? WarrantyCategoryCode : OutOfWarrantyCategoryCode;
+        if (request.MaintenanceInWarranty)
+        {
+            isUnderWarranty = true;
+        }
+
+        var categoryCode = isPartsShipment
+            ? PartsShipmentCategoryCode
+            : isUnderWarranty ? WarrantyCategoryCode : OutOfWarrantyCategoryCode;
         var defect = item.DefectReported!.Trim();
+        var observations = BuildObservations(request, item);
 
         var itemCode = await FindItemAsync(page, customer.Code, serialValidation.Serial);
         if (string.IsNullOrWhiteSpace(itemCode))
@@ -303,12 +394,33 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         await SubmitCurrentFormAsync(page, "osw0001.do?method=buscarCCusto", "barraControladora");
 
         await FillByNameAsync(page, "codItem", itemCode);
-        await SubmitCurrentFormAsync(page, "osw0001.do?method=buscarItem", "barraControladora");
+        var itemDialogMessage = await SubmitCurrentFormAndCaptureDialogAsync(
+            page,
+            "osw0001.do?method=buscarItem",
+            "barraControladora");
+        if (!string.IsNullOrWhiteSpace(itemDialogMessage))
+        {
+            return BuildResult(
+                serialValidation.Serial,
+                cnpj,
+                customer.Name,
+                serialValidation.ProductCode,
+                serialValidation.ProductDescription,
+                defect,
+                isUnderWarranty,
+                warrantyUntil,
+                categoryCode,
+                false,
+                "UNO_ITEM_REJEITADO",
+                itemDialogMessage,
+                null);
+        }
 
         await FillByNameAsync(page, "codCategoria", categoryCode.ToString(CultureInfo.InvariantCulture));
         await SelectByNameAsync(page, "codCategoria", categoryCode.ToString(CultureInfo.InvariantCulture));
         await FillByNameAsync(page, "codAtendente", AttendantCode.ToString(CultureInfo.InvariantCulture));
         await FillByNameAsync(page, "defeitoRelatado", defect);
+        await FillByNameAsync(page, "observacoes", observations);
         await FillByNameAsync(page, "qtd", "1");
 
         var today = DateTime.Today.ToString("dd/MM/yyyy", CultureInfo.GetCultureInfo("pt-BR"));
@@ -316,7 +428,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         await FillByNameAsync(page, "dtPrevisaoConclusao", today);
         await FillByNameAsync(page, "dtComprometida", today);
 
-        await SelectByNameAsync(page, "codStatus", "10");
+        await SelectByNameAsync(page, "codStatus", isPartsShipment ? "15" : "10");
         await SelectByNameAsync(page, "modalidade", "1");
         await SelectByNameAsync(page, "origem", "1");
         await SelectByNameAsync(page, "modoResposta", "4");
@@ -340,6 +452,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
                 defect,
                 isUnderWarranty,
                 warrantyUntil,
+                categoryCode,
                 false,
                 "UNO_OS_NAO_CONFIRMADA",
                 string.IsNullOrWhiteSpace(message)
@@ -357,6 +470,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             defect,
             isUnderWarranty,
             warrantyUntil,
+            categoryCode,
             true,
             "OS_ABERTA",
             null,
@@ -545,6 +659,37 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         throw new InvalidOperationException($"Formulario nao encontrado para enviar {action}.");
     }
 
+    private async Task<string?> SubmitCurrentFormAndCaptureDialogAsync(
+        IPage page,
+        string action,
+        string target = "_self",
+        string? preferredFieldName = null)
+    {
+        var dialogMessage = string.Empty;
+        var dialogHandled = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        async void Handler(object? _, IDialog dialog)
+        {
+            dialogMessage = dialog.Message;
+            dialogHandled.TrySetResult(dialogMessage);
+            await dialog.AcceptAsync();
+        }
+
+        page.Dialog += Handler;
+        try
+        {
+            await SubmitCurrentFormAsync(page, action, target, preferredFieldName);
+            var completed = await Task.WhenAny(dialogHandled.Task, Task.Delay(600));
+            return completed == dialogHandled.Task
+                ? await dialogHandled.Task
+                : string.IsNullOrWhiteSpace(dialogMessage) ? null : dialogMessage;
+        }
+        finally
+        {
+            page.Dialog -= Handler;
+        }
+    }
+
     private static IEnumerable<IFrame> OrderFramesForSubmit(IPage page, string? preferredFieldName)
     {
         if (string.IsNullOrWhiteSpace(preferredFieldName))
@@ -649,13 +794,16 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         string? defect,
         bool isUnderWarranty,
         DateOnly? warrantyUntil,
+        int? categoryCodeOverride,
         bool ready,
         string status,
         string? reason,
         string? serviceOrderCode)
     {
-        var categoryCode = isUnderWarranty ? WarrantyCategoryCode : OutOfWarrantyCategoryCode;
-        var categoryDescription = isUnderWarranty ? "Garantia manutencao" : "Fora de garantia manutencao";
+        var categoryCode = categoryCodeOverride ?? (isUnderWarranty ? WarrantyCategoryCode : OutOfWarrantyCategoryCode);
+        var categoryDescription = categoryCode == PartsShipmentCategoryCode
+            ? "Remessa de pecas"
+            : isUnderWarranty ? "Garantia manutencao" : "Fora de garantia manutencao";
 
         return new RmaServiceOrderItemResultDto(
             serial,
@@ -675,6 +823,39 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             status,
             reason,
             serviceOrderCode);
+    }
+
+    private static string BuildObservations(
+        RmaServiceOrderRequestDto request,
+        RmaServiceOrderItemRequestDto item)
+    {
+        var parts = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(request.PartToSend))
+        {
+            parts.Add($"Peca a ser enviada: {request.PartToSend.Trim()}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.UnoObservations))
+        {
+            parts.Add(request.UnoObservations.Trim());
+        }
+
+        if (!string.IsNullOrWhiteSpace(item.UnoObservations))
+        {
+            parts.Add(item.UnoObservations.Trim());
+        }
+
+        return string.Join(Environment.NewLine, parts);
+    }
+
+    private string? GetConfigurationError()
+    {
+        return string.IsNullOrWhiteSpace(_options.BaseUrl)
+            || string.IsNullOrWhiteSpace(_options.Login)
+            || string.IsNullOrWhiteSpace(_options.Password)
+            ? "Configure UnoErp__BaseUrl, UnoErp__Login e UnoErp__Password para acessar o UNO."
+            : null;
     }
 
     private string AbsoluteUrl(string path)
