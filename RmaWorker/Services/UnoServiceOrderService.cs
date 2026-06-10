@@ -14,7 +14,8 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
     private const int CostCenterCode = 14;
     private const int WarrantyCategoryCode = 2;
     private const int OutOfWarrantyCategoryCode = 5;
-    private const int PartsShipmentCategoryCode = 7;
+    private const int PartsShipmentWarrantyCategoryCode = 7;
+    private const int PartsShipmentOutOfWarrantyCategoryCode = 8;
     private const int AttendantCode = 906;
     private const int Quantity = 1;
 
@@ -359,11 +360,13 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
     {
         var cnpj = request.Cnpj!;
         var isPartsShipment = string.Equals(request.RequestType, "parts", StringComparison.OrdinalIgnoreCase);
-        var categoryCodeOverride = isPartsShipment ? PartsShipmentCategoryCode : (int?)null;
         var serialValidation = await _serialValidationService.ValidateAsync(item.Serial, CancellationToken.None);
         if (!serialValidation.Exists)
         {
-            return BuildResult(item.Serial, cnpj, customer.Name, null, null, item.DefectReported, false, null, categoryCodeOverride, false, "SERIAL_NAO_ENCONTRADO", "Serial nao encontrado na consulta atual do UNO.", null);
+            var missingSerialCategory = isPartsShipment
+                ? PartsShipmentOutOfWarrantyCategoryCode
+                : (int?)null;
+            return BuildResult(item.Serial, cnpj, customer.Name, null, null, item.DefectReported, false, null, missingSerialCategory, false, "SERIAL_NAO_ENCONTRADO", "Serial nao encontrado na consulta atual do UNO.", null);
         }
 
         var warrantyUntil = serialValidation.InvoiceIssuedAt?.AddYears(1);
@@ -374,8 +377,8 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         }
 
         var categoryCode = isPartsShipment
-            ? PartsShipmentCategoryCode
-            : isUnderWarranty ? WarrantyCategoryCode : OutOfWarrantyCategoryCode;
+            ? (isUnderWarranty ? PartsShipmentWarrantyCategoryCode : PartsShipmentOutOfWarrantyCategoryCode)
+            : (isUnderWarranty ? WarrantyCategoryCode : OutOfWarrantyCategoryCode);
         var defect = item.DefectReported!.Trim();
         var observations = BuildObservations(request, item);
 
@@ -801,9 +804,12 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         string? serviceOrderCode)
     {
         var categoryCode = categoryCodeOverride ?? (isUnderWarranty ? WarrantyCategoryCode : OutOfWarrantyCategoryCode);
-        var categoryDescription = categoryCode == PartsShipmentCategoryCode
-            ? "Remessa de pecas"
-            : isUnderWarranty ? "Garantia manutencao" : "Fora de garantia manutencao";
+        var categoryDescription = categoryCode switch
+        {
+            PartsShipmentWarrantyCategoryCode => "Garantia - Remessa de pecas",
+            PartsShipmentOutOfWarrantyCategoryCode => "Fora de garantia - Remessa de pecas",
+            _ => isUnderWarranty ? "Garantia manutencao" : "Fora de garantia manutencao"
+        };
 
         return new RmaServiceOrderItemResultDto(
             serial,
