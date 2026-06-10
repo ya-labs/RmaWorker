@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { CheckCircle2, Clipboard, PackagePlus, RotateCcw, Search, Send, ShieldAlert, Wrench } from 'lucide-react';
+import { CheckCircle2, Clipboard, PackagePlus, RefreshCw, RotateCcw, Search, Send, ShieldAlert, Wrench } from 'lucide-react';
 import './styles.css';
 
 type ApiResult = {
@@ -45,7 +45,7 @@ type SpocIdBlockNextResponse = {
 };
 
 type HealthStatus = 'checking' | 'online' | 'offline';
-type RequestMode = 'maintenance' | 'parts' | 'idblock-next';
+type RequestMode = 'maintenance' | 'parts' | 'exchange' | 'idblock-next';
 
 const emptyResponse: ApiResponse = {
   status: 'AGUARDANDO',
@@ -273,6 +273,7 @@ function App() {
   const [serviceOrderDefect, setServiceOrderDefect] = React.useState('');
   const [maintenanceInWarranty, setMaintenanceInWarranty] = React.useState(false);
   const [partToSend, setPartToSend] = React.useState('');
+  const [unoObservations, setUnoObservations] = React.useState('');
   const [spocResolution, setSpocResolution] = React.useState<SpocIdBlockNextResponse | null>(null);
   const [openIdBlockNextServiceOrder, setOpenIdBlockNextServiceOrder] = React.useState(false);
   const [response, setResponse] = React.useState<ApiResponse>(emptyResponse);
@@ -296,9 +297,9 @@ function App() {
     : serials.length > 0
       && cnpj.trim().length > 0
       && serviceOrderDefect.trim().length > 0
-      && (requestMode === 'maintenance' || partToSend.trim().length > 0);
+      && (requestMode === 'maintenance' || requestMode === 'exchange' || partToSend.trim().length > 0);
   const eligibleResults = response.results.filter((result) => result.status === 'APTO' && result.extraction.serial);
-  const canOpenServiceOrder = requestMode === 'maintenance' && eligibleResults.length > 0;
+  const canOpenServiceOrder = (requestMode === 'maintenance' || requestMode === 'exchange') && eligibleResults.length > 0;
   const canOpenIdBlockNextRma = requestMode === 'idblock-next'
     && openIdBlockNextServiceOrder
     && Boolean(idBlockNextSerial)
@@ -363,7 +364,7 @@ function App() {
         return;
       }
 
-      if (requestMode === 'maintenance') {
+      if (requestMode === 'maintenance' || requestMode === 'exchange') {
         const apiResponse = await fetch(`${apiBaseUrl}/api/rma/generate-by-serial`, {
           method: 'POST',
           headers: {
@@ -374,6 +375,7 @@ function App() {
             cnpj,
             defectReported: serviceOrderDefect,
             maintenanceInWarranty,
+            requestType: requestMode === 'exchange' ? 'exchange' : 'maintenance',
           }),
         });
 
@@ -428,14 +430,18 @@ function App() {
       },
       body: JSON.stringify({
         cnpj,
-        requestType: type === 'parts' ? 'parts' : 'maintenance',
+        requestType: type === 'parts' ? 'parts' : type === 'exchange' ? 'exchange' : 'maintenance',
         maintenanceInWarranty,
         partToSend: type === 'parts' ? partToSend : null,
         unoObservations: null,
         items: orderSerials.map((item) => ({
           serial: item,
           defectReported: serviceOrderDefect,
-          unoObservations: type === 'idblock-next' ? partToSend.trim() || null : null,
+          unoObservations: type === 'idblock-next'
+            ? partToSend.trim() || null
+            : type === 'exchange'
+              ? unoObservations.trim() || null
+              : null,
         })),
       }),
     });
@@ -469,6 +475,32 @@ function App() {
 
     try {
       const serviceOrderResponse = await openServiceOrder('maintenance');
+      const openedCodes = serviceOrderResponse.items
+        .filter((item) => item.serviceOrderCode)
+        .map((item) => `${item.serial}: O.S ${item.serviceOrderCode}`);
+      const failedItems = serviceOrderResponse.items
+        .filter((item) => item.status !== 'OS_ABERTA')
+        .map((item) => `${item.serial}: ${item.reason || item.status}`);
+      setServiceOrderStatus([
+        serviceOrderResponse.message,
+        ...openedCodes,
+        ...failedItems,
+      ].join('\n'));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Falha ao abrir a O.S no sistema interno.';
+      setError(message);
+    } finally {
+      setOpeningServiceOrder(false);
+    }
+  }
+
+  async function handleOpenExchangeServiceOrder() {
+    setOpeningServiceOrder(true);
+    setServiceOrderStatus(null);
+    setError(null);
+
+    try {
+      const serviceOrderResponse = await openServiceOrder('exchange');
       const openedCodes = serviceOrderResponse.items
         .filter((item) => item.serviceOrderCode)
         .map((item) => `${item.serial}: O.S ${item.serviceOrderCode}`);
@@ -535,6 +567,7 @@ function App() {
     setServiceOrderDefect('');
     setMaintenanceInWarranty(false);
     setPartToSend('');
+    setUnoObservations('');
     setSpocResolution(null);
     setOpenIdBlockNextServiceOrder(false);
     setResponse(emptyResponse);
@@ -590,6 +623,17 @@ function App() {
                 <span>Envio de pecas</span>
               </button>
               <button
+                className={requestMode === 'exchange' ? 'mode-button active' : 'mode-button'}
+                type="button"
+                onClick={() => setRequestMode('exchange')}
+                role="tab"
+                aria-selected={requestMode === 'exchange'}
+                title="Troca"
+              >
+                <RefreshCw size={18} />
+                <span>Troca</span>
+              </button>
+              <button
                 className={requestMode === 'idblock-next' ? 'mode-button active' : 'mode-button'}
                 type="button"
                 onClick={() => {
@@ -610,8 +654,8 @@ function App() {
             </div>
             <div className="message incoming">
               <div className="message-header">
-                {requestMode === 'maintenance' ? <Wrench size={18} /> : requestMode === 'parts' ? <PackagePlus size={18} /> : <Search size={18} />}
-                <span>{requestMode === 'maintenance' ? 'Manutencao' : requestMode === 'parts' ? 'Envio de pecas' : 'IDBlock Next'}</span>
+                {requestMode === 'maintenance' ? <Wrench size={18} /> : requestMode === 'parts' ? <PackagePlus size={18} /> : requestMode === 'exchange' ? <RefreshCw size={18} /> : <Search size={18} />}
+                <span>{requestMode === 'maintenance' ? 'Manutencao' : requestMode === 'parts' ? 'Envio de pecas' : requestMode === 'exchange' ? 'Troca' : 'IDBlock Next'}</span>
               </div>
               <div className="serial-panel">
                 {requestMode === 'idblock-next' ? null : (
@@ -695,6 +739,19 @@ function App() {
                         />
                       </>
                     ) : null}
+                    {requestMode === 'exchange' ? (
+                      <>
+                        <label htmlFor="uno-observations">Observacoes</label>
+                        <textarea
+                          id="uno-observations"
+                          value={unoObservations}
+                          onChange={(event) => setUnoObservations(event.target.value)}
+                          placeholder="Observacoes para a O.S"
+                          spellCheck="false"
+                          aria-label="Informe observacoes para a O.S"
+                        />
+                      </>
+                    ) : null}
                     <label className="checkbox-row" htmlFor="maintenance-warranty">
                       <input
                         id="maintenance-warranty"
@@ -702,7 +759,7 @@ function App() {
                         checked={maintenanceInWarranty}
                         onChange={(event) => setMaintenanceInWarranty(event.target.checked)}
                       />
-                      <span>{requestMode === 'parts' ? 'Envio de pecas' : 'Manutencao'} em garantia liberada manualmente</span>
+                      <span>{requestMode === 'parts' ? 'Envio de pecas' : requestMode === 'exchange' ? 'Troca' : 'Manutencao'} em garantia liberada manualmente</span>
                     </label>
                   </>
                 ) : null}
@@ -733,9 +790,11 @@ function App() {
                     ? requestMode === 'idblock-next' ? 'Consultando SPOC' : 'Consultando UNO'
                     : requestMode === 'maintenance'
                       ? 'Gerar manutencao'
-                      : requestMode === 'parts'
-                        ? 'Abrir O.S e gerar template'
-                        : 'Consultar SPOC'}
+                      : requestMode === 'exchange'
+                        ? 'Gerar troca'
+                        : requestMode === 'parts'
+                          ? 'Abrir O.S e gerar template'
+                          : 'Consultar SPOC'}
                 </span>
               </button>
             </div>
@@ -775,9 +834,9 @@ function App() {
               )}
               {canOpenServiceOrder ? (
                 <div className="service-order-prompt">
-                  <span>Deseja abrir a O.S de manutencao no UNO?</span>
-                  <button type="button" onClick={handleOpenServiceOrder} disabled={openingServiceOrder}>
-                    <Send size={18} />
+                  <span>{requestMode === 'exchange' ? 'Deseja abrir a O.S de troca no UNO?' : 'Deseja abrir a O.S de manutencao no UNO?'}</span>
+                  <button type="button" onClick={requestMode === 'exchange' ? handleOpenExchangeServiceOrder : handleOpenServiceOrder} disabled={openingServiceOrder}>
+                    {requestMode === 'exchange' ? <RefreshCw size={18} /> : <Wrench size={18} />}
                     <span>{openingServiceOrder ? 'Abrindo O.S' : 'Abrir O.S'}</span>
                   </button>
                   {serviceOrderStatus ? <p>{serviceOrderStatus}</p> : null}

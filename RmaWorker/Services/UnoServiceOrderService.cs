@@ -14,6 +14,8 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
     private const int CostCenterCode = 14;
     private const int WarrantyCategoryCode = 2;
     private const int OutOfWarrantyCategoryCode = 5;
+    private const int ExchangeWarrantyCategoryCode = 6;
+    private const int ExchangeOutOfWarrantyCategoryCode = 4;
     private const int PartsShipmentWarrantyCategoryCode = 7;
     private const int PartsShipmentOutOfWarrantyCategoryCode = 8;
     private const int AttendantCode = 906;
@@ -360,6 +362,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
     {
         var cnpj = request.Cnpj!;
         var isPartsShipment = string.Equals(request.RequestType, "parts", StringComparison.OrdinalIgnoreCase);
+        var isExchange = string.Equals(request.RequestType, "exchange", StringComparison.OrdinalIgnoreCase);
         SerialValidationResultDto serialValidation;
         try
         {
@@ -374,11 +377,15 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         {
             var missingSerialCategory = isPartsShipment
                 ? PartsShipmentOutOfWarrantyCategoryCode
+                : isExchange
+                    ? ExchangeOutOfWarrantyCategoryCode
                 : (int?)null;
             return BuildResult(item.Serial, cnpj, customer.Name, null, null, item.DefectReported, false, null, missingSerialCategory, false, "SERIAL_NAO_ENCONTRADO", "Serial nao encontrado na consulta atual do UNO.", null);
         }
 
-        var warrantyUntil = serialValidation.InvoiceIssuedAt?.AddYears(1);
+        var warrantyUntil = isExchange
+            ? serialValidation.InvoiceIssuedAt?.AddDays(60)
+            : serialValidation.InvoiceIssuedAt?.AddYears(1);
         var isUnderWarranty = warrantyUntil.HasValue && warrantyUntil.Value >= DateOnly.FromDateTime(DateTime.Today);
         if (request.MaintenanceInWarranty)
         {
@@ -387,6 +394,8 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
 
         var categoryCode = isPartsShipment
             ? (isUnderWarranty ? PartsShipmentWarrantyCategoryCode : PartsShipmentOutOfWarrantyCategoryCode)
+            : isExchange
+                ? (isUnderWarranty ? ExchangeWarrantyCategoryCode : ExchangeOutOfWarrantyCategoryCode)
             : (isUnderWarranty ? WarrantyCategoryCode : OutOfWarrantyCategoryCode);
         var defect = item.DefectReported!.Trim();
         var observations = BuildObservations(request, item);
@@ -459,7 +468,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         await FillByNameAsync(page, "dtPrevisaoConclusao", today);
         await FillByNameAsync(page, "dtComprometida", today);
 
-        await SelectByNameAsync(page, "codStatus", isPartsShipment ? "15" : "10");
+        await SelectByNameAsync(page, "codStatus", isPartsShipment || isExchange ? "15" : "10");
         await SelectByNameAsync(page, "modalidade", "1");
         await SelectByNameAsync(page, "origem", "1");
         await SelectByNameAsync(page, "modoResposta", "4");
@@ -966,6 +975,8 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         var categoryCode = categoryCodeOverride ?? (isUnderWarranty ? WarrantyCategoryCode : OutOfWarrantyCategoryCode);
         var categoryDescription = categoryCode switch
         {
+            ExchangeWarrantyCategoryCode => "Garantia troca",
+            ExchangeOutOfWarrantyCategoryCode => "Fora de garantia troca",
             PartsShipmentWarrantyCategoryCode => "Garantia - Remessa de pecas",
             PartsShipmentOutOfWarrantyCategoryCode => "Fora de garantia - Remessa de pecas",
             _ => isUnderWarranty ? "Garantia manutencao" : "Fora de garantia manutencao"

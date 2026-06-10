@@ -5,4 +5,5 @@ public sealed record RmaSerialRequestDto(
     IReadOnlyCollection<string>? Serials,
     string? Cnpj,
     string? DefectReported,
-    bool MaintenanceInWarranty = false);
+    bool MaintenanceInWarranty = false,
+    string? RequestType = null);
