@@ -8,63 +8,6 @@ namespace RmaWorker.Services;
 
 public sealed class EmailResponseService : IEmailResponseService
 {
-    private readonly IGmailService _gmailService;
-
-    public EmailResponseService(IGmailService gmailService)
-    {
-        _gmailService = gmailService;
-    }
-
-    public Task ReplyMissingDataAsync(
-        EmailMessageDto message,
-        IReadOnlyCollection<string> missingFields,
-        CancellationToken cancellationToken)
-    {
-        return _gmailService.SendReplyAsync(message, BuildMissingDataBody(missingFields), cancellationToken);
-    }
-
-    public Task ReplySerialNotFoundAsync(
-        EmailMessageDto message,
-        string serial,
-        CancellationToken cancellationToken)
-    {
-        return _gmailService.SendReplyAsync(message, BuildSerialNotFoundBody(serial), cancellationToken);
-    }
-
-    public Task ReplyRmaEligibleAsync(
-        EmailMessageDto message,
-        SerialValidationResultDto serialValidation,
-        InvoiceDataDto? invoiceData,
-        bool isUnderWarranty,
-        DateOnly? warrantyUntil,
-        CancellationToken cancellationToken)
-    {
-        var result = new RmaProcessingResultDto(
-            new OllamaRmaExtractionDto(serialValidation.Serial, serialValidation.Cnpj, null, null, null, false, false, true, true, true),
-            "APTO",
-            null,
-            [],
-            new RmaTechnicalClassificationDto("APTO_PARA_ORIENTACAO_NF", "Fluxo legado de resposta apta.", []),
-            serialValidation,
-            invoiceData,
-            isUnderWarranty,
-            warrantyUntil);
-
-        return _gmailService.SendHtmlReplyAsync(message, BuildRmaEligibleHtml([result], []), cancellationToken);
-    }
-
-    public Task ReplyProcessingResultsAsync(
-        EmailMessageDto message,
-        IReadOnlyCollection<RmaProcessingResultDto> results,
-        CancellationToken cancellationToken)
-    {
-        var response = BuildProcessingResponse(results);
-
-        return response.IsHtml
-            ? _gmailService.SendHtmlReplyAsync(message, response.ResponseBody, cancellationToken)
-            : _gmailService.SendReplyAsync(message, response.ResponseBody, cancellationToken);
-    }
-
     public RmaAssistantResponseDto BuildProcessingResponse(IReadOnlyCollection<RmaProcessingResultDto> results)
     {
         var eligibleResults = results
