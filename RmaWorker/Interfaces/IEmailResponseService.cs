@@ -5,4 +5,6 @@ namespace RmaWorker.Interfaces;
 public interface IEmailResponseService
 {
     RmaAssistantResponseDto BuildProcessingResponse(IReadOnlyCollection<RmaProcessingResultDto> results);
+
+    RmaAssistantResponseDto BuildExchangeResponse(IReadOnlyCollection<RmaProcessingResultDto> results);
 }
