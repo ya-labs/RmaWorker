@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { CheckCircle2, Clipboard, Hash, PackagePlus, RotateCcw, Send, ShieldAlert, Wrench } from 'lucide-react';
+import { CheckCircle2, Clipboard, PackagePlus, RotateCcw, Search, Send, ShieldAlert, Wrench } from 'lucide-react';
 import './styles.css';
 
 type ApiResult = {
@@ -34,8 +34,18 @@ type ServiceOrderResponse = {
   }>;
 };
 
+type SpocIdBlockNextResponse = {
+  status: string;
+  message: string;
+  inputSerial?: string | null;
+  baseSerial?: string | null;
+  nextSerial?: string | null;
+  isHtml: boolean;
+  responseBody: string;
+};
+
 type HealthStatus = 'checking' | 'online' | 'offline';
-type RequestMode = 'maintenance' | 'parts';
+type RequestMode = 'maintenance' | 'parts' | 'idblock-next';
 
 const emptyResponse: ApiResponse = {
   status: 'AGUARDANDO',
@@ -60,6 +70,9 @@ function statusLabel(status: string) {
     DADOS_AUSENTES: 'Dados faltantes',
     CNPJ_INVALIDO: 'CNPJ invalido',
     SERIAL_NAO_ENCONTRADO: 'Serial nao encontrado',
+    SPOC_SERIAL_ENCONTRADO: 'NEXT encontrada',
+    SPOC_SERIAL_NAO_ENCONTRADO: 'Nao encontrado no SPOC',
+    SPOC_ERRO: 'Erro no SPOC',
     PENDENTE: 'Pendente',
     ERRO: 'Erro',
   };
@@ -226,6 +239,24 @@ function buildPartsTemplate(serviceOrderResponse: ServiceOrderResponse) {
   `;
 }
 
+function buildIdBlockNextResult(response: SpocIdBlockNextResponse): ApiResponse {
+  return {
+    status: response.status,
+    isHtml: response.isHtml,
+    responseBody: response.responseBody,
+    results: [
+      {
+        extraction: {
+          serial: response.nextSerial || response.inputSerial,
+        },
+        status: response.status,
+        reason: response.message,
+        missingFields: [],
+      },
+    ],
+  };
+}
+
 function html(value: string) {
   return value
     .replace(/&/g, '&amp;')
@@ -242,6 +273,8 @@ function App() {
   const [serviceOrderDefect, setServiceOrderDefect] = React.useState('');
   const [maintenanceInWarranty, setMaintenanceInWarranty] = React.useState(false);
   const [partToSend, setPartToSend] = React.useState('');
+  const [spocResolution, setSpocResolution] = React.useState<SpocIdBlockNextResponse | null>(null);
+  const [openIdBlockNextServiceOrder, setOpenIdBlockNextServiceOrder] = React.useState(false);
   const [response, setResponse] = React.useState<ApiResponse>(emptyResponse);
   const [copied, setCopied] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
@@ -253,14 +286,24 @@ function App() {
   const extraction = response.results.length > 1
     ? { ...firstExtraction(response), serial: serialSummary(response) }
     : firstExtraction(response);
-  const isReady = response.status === 'APTO' || response.status === 'OS_ABERTA';
+  const isReady = response.status === 'APTO'
+    || response.status === 'OS_ABERTA'
+    || response.status === 'SPOC_SERIAL_ENCONTRADO';
   const serials = splitSerials(serial);
-  const canSubmit = serials.length > 0
-    && cnpj.trim().length > 0
-    && serviceOrderDefect.trim().length > 0
-    && (requestMode === 'maintenance' || partToSend.trim().length > 0);
+  const idBlockNextSerial = spocResolution?.nextSerial ?? '';
+  const canSubmit = requestMode === 'idblock-next'
+    ? serial.trim().length > 0
+    : serials.length > 0
+      && cnpj.trim().length > 0
+      && serviceOrderDefect.trim().length > 0
+      && (requestMode === 'maintenance' || partToSend.trim().length > 0);
   const eligibleResults = response.results.filter((result) => result.status === 'APTO' && result.extraction.serial);
   const canOpenServiceOrder = requestMode === 'maintenance' && eligibleResults.length > 0;
+  const canOpenIdBlockNextRma = requestMode === 'idblock-next'
+    && openIdBlockNextServiceOrder
+    && Boolean(idBlockNextSerial)
+    && cnpj.trim().length > 0
+    && serviceOrderDefect.trim().length > 0;
 
   React.useEffect(() => {
     let active = true;
@@ -298,6 +341,28 @@ function App() {
     setServiceOrderStatus(null);
 
     try {
+      if (requestMode === 'idblock-next') {
+        const apiResponse = await fetch(`${apiBaseUrl}/api/rma/spoc/idblock-next/resolve`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            serial,
+          }),
+        });
+
+        if (!apiResponse.ok) {
+          const body = await apiResponse.text();
+          throw new Error(body || `Erro HTTP ${apiResponse.status}`);
+        }
+
+        const spocResponse = await apiResponse.json() as SpocIdBlockNextResponse;
+        setSpocResolution(spocResponse);
+        setResponse(buildIdBlockNextResult(spocResponse));
+        return;
+      }
+
       if (requestMode === 'maintenance') {
         const apiResponse = await fetch(`${apiBaseUrl}/api/rma/generate-by-serial`, {
           method: 'POST',
@@ -352,6 +417,10 @@ function App() {
   }
 
   async function openServiceOrder(type: RequestMode) {
+    const orderSerials = type === 'idblock-next'
+      ? [idBlockNextSerial]
+      : serials;
+
     const apiResponse = await fetch(`${apiBaseUrl}/api/rma/service-order/open`, {
       method: 'POST',
       headers: {
@@ -359,14 +428,14 @@ function App() {
       },
       body: JSON.stringify({
         cnpj,
-        requestType: type,
+        requestType: type === 'parts' ? 'parts' : 'maintenance',
         maintenanceInWarranty,
         partToSend: type === 'parts' ? partToSend : null,
         unoObservations: null,
-        items: serials.map((item) => ({
+        items: orderSerials.map((item) => ({
           serial: item,
           defectReported: serviceOrderDefect,
-          unoObservations: null,
+          unoObservations: type === 'idblock-next' ? partToSend.trim() || null : null,
         })),
       }),
     });
@@ -419,12 +488,55 @@ function App() {
     }
   }
 
+  async function handleOpenIdBlockNextRma() {
+    setOpeningServiceOrder(true);
+    setServiceOrderStatus(null);
+    setError(null);
+
+    try {
+      const serviceOrderResponse = await openServiceOrder('idblock-next');
+      const openedCodes = serviceOrderResponse.items
+        .filter((item) => item.serviceOrderCode)
+        .map((item) => `${item.serial}: O.S ${item.serviceOrderCode}`);
+      const failedItems = serviceOrderResponse.items
+        .filter((item) => item.status !== 'OS_ABERTA')
+        .map((item) => `${item.serial}: ${item.reason || item.status}`);
+      setServiceOrderStatus([
+        serviceOrderResponse.message,
+        ...openedCodes,
+        ...failedItems,
+      ].join('\n'));
+      setResponse({
+        status: serviceOrderResponse.status,
+        isHtml: response.isHtml,
+        responseBody: response.responseBody,
+        results: serviceOrderResponse.items.map((item) => ({
+          extraction: {
+            serial: item.serial,
+            cnpj: item.cnpj || cnpj,
+            defeito: serviceOrderDefect,
+          },
+          status: item.status,
+          reason: item.reason,
+          missingFields: [],
+        })),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Falha ao abrir a O.S no sistema interno.';
+      setError(message);
+    } finally {
+      setOpeningServiceOrder(false);
+    }
+  }
+
   function handleReset() {
     setSerial('');
     setCnpj('');
     setServiceOrderDefect('');
     setMaintenanceInWarranty(false);
     setPartToSend('');
+    setSpocResolution(null);
+    setOpenIdBlockNextServiceOrder(false);
     setResponse(emptyResponse);
     setError(null);
     setCopied(false);
@@ -477,51 +589,124 @@ function App() {
                 <PackagePlus size={18} />
                 <span>Envio de pecas</span>
               </button>
+              <button
+                className={requestMode === 'idblock-next' ? 'mode-button active' : 'mode-button'}
+                type="button"
+                onClick={() => {
+                  setRequestMode('idblock-next');
+                  setSpocResolution(null);
+                  setOpenIdBlockNextServiceOrder(false);
+                  setResponse(emptyResponse);
+                  setServiceOrderStatus(null);
+                  setError(null);
+                }}
+                role="tab"
+                aria-selected={requestMode === 'idblock-next'}
+                title="IDBlock Next"
+              >
+                <Search size={18} />
+                <span>IDBlock Next</span>
+              </button>
             </div>
             <div className="message incoming">
               <div className="message-header">
-                {requestMode === 'maintenance' ? <Wrench size={18} /> : <PackagePlus size={18} />}
-                <span>{requestMode === 'maintenance' ? 'Manutencao' : 'Envio de pecas'}</span>
+                {requestMode === 'maintenance' ? <Wrench size={18} /> : requestMode === 'parts' ? <PackagePlus size={18} /> : <Search size={18} />}
+                <span>{requestMode === 'maintenance' ? 'Manutencao' : requestMode === 'parts' ? 'Envio de pecas' : 'IDBlock Next'}</span>
               </div>
               <div className="serial-panel">
-                <label htmlFor="cnpj-input">CNPJ da revenda</label>
-                <input
-                  id="cnpj-input"
-                  value={cnpj}
-                  onChange={(event) => setCnpj(event.target.value)}
-                  placeholder="11222333000181"
-                  spellCheck="false"
-                  aria-label="Informe o CNPJ da revenda"
-                />
-                <label htmlFor="serial-input">Series dos equipamentos</label>
-                <textarea
-                  id="serial-input"
-                  value={serial}
-                  onChange={(event) => setSerial(event.target.value)}
-                  placeholder={`0A0000/000000\n0B0000/000001`}
-                  spellCheck="false"
-                  aria-label="Informe um ou mais numeros de serie"
-                />
-                <label htmlFor="service-order-defect">Defeito relatado</label>
-                <textarea
-                  id="service-order-defect"
-                  value={serviceOrderDefect}
-                  onChange={(event) => setServiceOrderDefect(event.target.value)}
-                  placeholder="Descreva o defeito informado pelo cliente"
-                  spellCheck="false"
-                  aria-label="Informe o defeito relatado"
-                />
-                {requestMode === 'maintenance' ? (
-                  <label className="checkbox-row" htmlFor="maintenance-warranty">
+                {requestMode === 'idblock-next' ? null : (
+                  <>
+                    <label htmlFor="cnpj-input">CNPJ da revenda</label>
                     <input
-                      id="maintenance-warranty"
-                      type="checkbox"
-                      checked={maintenanceInWarranty}
-                      onChange={(event) => setMaintenanceInWarranty(event.target.checked)}
+                      id="cnpj-input"
+                      value={cnpj}
+                      onChange={(event) => setCnpj(event.target.value)}
+                      placeholder="11222333000181"
+                      spellCheck="false"
+                      aria-label="Informe o CNPJ da revenda"
                     />
-                    <span>Manutencao em garantia liberada manualmente</span>
-                  </label>
+                  </>
+                )}
+                <label htmlFor="serial-input">{requestMode === 'idblock-next' ? 'Serial do IDFace' : 'Series dos equipamentos'}</label>
+                {requestMode === 'idblock-next' ? (
+                  <input
+                    id="serial-input"
+                    value={serial}
+                    onChange={(event) => setSerial(event.target.value)}
+                    placeholder="0A0000/000000"
+                    spellCheck="false"
+                    aria-label="Informe o numero de serie do IDFace"
+                  />
                 ) : (
+                  <textarea
+                    id="serial-input"
+                    value={serial}
+                    onChange={(event) => setSerial(event.target.value)}
+                    placeholder={`0A0000/000000\n0B0000/000001`}
+                    spellCheck="false"
+                    aria-label="Informe um ou mais numeros de serie"
+                  />
+                )}
+                {requestMode === 'idblock-next' ? (
+                  <label className="checkbox-row" htmlFor="idblock-open-os">
+                    <input
+                      id="idblock-open-os"
+                      type="checkbox"
+                      checked={openIdBlockNextServiceOrder}
+                      onChange={(event) => setOpenIdBlockNextServiceOrder(event.target.checked)}
+                    />
+                    <span>Abertura de O.S</span>
+                  </label>
+                ) : null}
+                {requestMode !== 'idblock-next' || openIdBlockNextServiceOrder ? (
+                  <>
+                    {requestMode === 'idblock-next' ? (
+                      <>
+                        <label htmlFor="cnpj-input">CNPJ da revenda</label>
+                        <input
+                          id="cnpj-input"
+                          value={cnpj}
+                          onChange={(event) => setCnpj(event.target.value)}
+                          placeholder="11222333000181"
+                          spellCheck="false"
+                          aria-label="Informe o CNPJ da revenda"
+                        />
+                      </>
+                    ) : null}
+                    <label htmlFor="service-order-defect">Defeito relatado</label>
+                    <textarea
+                      id="service-order-defect"
+                      value={serviceOrderDefect}
+                      onChange={(event) => setServiceOrderDefect(event.target.value)}
+                      placeholder="Descreva o defeito informado pelo cliente"
+                      spellCheck="false"
+                      aria-label="Informe o defeito relatado"
+                    />
+                    {requestMode === 'idblock-next' ? (
+                      <>
+                        <label htmlFor="part-input">Observacoes</label>
+                        <textarea
+                          id="part-input"
+                          value={partToSend}
+                          onChange={(event) => setPartToSend(event.target.value)}
+                          placeholder="Observacoes para a O.S"
+                          spellCheck="false"
+                          aria-label="Informe observacoes para a O.S"
+                        />
+                      </>
+                    ) : null}
+                    <label className="checkbox-row" htmlFor="maintenance-warranty">
+                      <input
+                        id="maintenance-warranty"
+                        type="checkbox"
+                        checked={maintenanceInWarranty}
+                        onChange={(event) => setMaintenanceInWarranty(event.target.checked)}
+                      />
+                      <span>{requestMode === 'parts' ? 'Envio de pecas' : 'Manutencao'} em garantia liberada manualmente</span>
+                    </label>
+                  </>
+                ) : null}
+                {requestMode === 'parts' ? (
                   <>
                     <label htmlFor="part-input">Peca a ser enviada</label>
                     <input
@@ -533,7 +718,7 @@ function App() {
                       aria-label="Informe a peca a ser enviada"
                     />
                   </>
-                )}
+                ) : null}
               </div>
             </div>
             <div className="actions">
@@ -542,13 +727,15 @@ function App() {
                 <span>Limpar</span>
               </button>
               <button className="primary-button" type="button" onClick={handleGenerate} disabled={loading || !canSubmit} title="Executar">
-                <Send size={18} />
+                {requestMode === 'idblock-next' ? <Search size={18} /> : <Send size={18} />}
                 <span>
                   {loading
-                    ? 'Consultando UNO'
+                    ? requestMode === 'idblock-next' ? 'Consultando SPOC' : 'Consultando UNO'
                     : requestMode === 'maintenance'
                       ? 'Gerar manutencao'
-                      : 'Abrir O.S e gerar template'}
+                      : requestMode === 'parts'
+                        ? 'Abrir O.S e gerar template'
+                        : 'Consultar SPOC'}
                 </span>
               </button>
             </div>
@@ -574,6 +761,12 @@ function App() {
                   <strong>{extraction?.defeito || serviceOrderDefect || 'Nao identificado'}</strong>
                 </div>
               </div>
+              {requestMode === 'idblock-next' && spocResolution?.nextSerial ? (
+                <div className="next-serial-box">
+                  <span>Serial da IDBlock Next encontrado no SPOC</span>
+                  <strong>{spocResolution.nextSerial}</strong>
+                </div>
+              ) : null}
               {error ? <div className="error-box">{error}</div> : null}
               {response.isHtml ? (
                 <div className="html-preview" dangerouslySetInnerHTML={{ __html: response.responseBody }} />
@@ -586,6 +779,16 @@ function App() {
                   <button type="button" onClick={handleOpenServiceOrder} disabled={openingServiceOrder}>
                     <Send size={18} />
                     <span>{openingServiceOrder ? 'Abrindo O.S' : 'Abrir O.S'}</span>
+                  </button>
+                  {serviceOrderStatus ? <p>{serviceOrderStatus}</p> : null}
+                </div>
+              ) : null}
+              {requestMode === 'idblock-next' && spocResolution?.nextSerial && openIdBlockNextServiceOrder ? (
+                <div className="service-order-prompt">
+                  <span>Deseja abrir a O.S da IDBlock Next no UNO?</span>
+                  <button type="button" onClick={handleOpenIdBlockNextRma} disabled={openingServiceOrder || !canOpenIdBlockNextRma}>
+                    <Send size={18} />
+                    <span>{openingServiceOrder ? 'Abrindo O.S' : 'Abrir O.S no UNO'}</span>
                   </button>
                   {serviceOrderStatus ? <p>{serviceOrderStatus}</p> : null}
                 </div>
