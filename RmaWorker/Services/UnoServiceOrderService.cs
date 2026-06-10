@@ -360,7 +360,16 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
     {
         var cnpj = request.Cnpj!;
         var isPartsShipment = string.Equals(request.RequestType, "parts", StringComparison.OrdinalIgnoreCase);
-        var serialValidation = await _serialValidationService.ValidateAsync(item.Serial, CancellationToken.None);
+        SerialValidationResultDto serialValidation;
+        try
+        {
+            serialValidation = await _serialValidationService.ValidateAsync(item.Serial, CancellationToken.None);
+        }
+        catch (HttpRequestException ex)
+        {
+            return BuildResult(item.Serial, cnpj, customer.Name, null, null, item.DefectReported, false, null, null, false, "UNO_INDISPONIVEL", $"Falha ao consultar o serial no UNO: {ex.Message}", null);
+        }
+
         if (!serialValidation.Exists)
         {
             var missingSerialCategory = isPartsShipment
@@ -396,11 +405,11 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         await FillByNameAsync(page, "ccusto", CostCenterCode.ToString(CultureInfo.InvariantCulture));
         await SubmitCurrentFormAsync(page, "osw0001.do?method=buscarCCusto", "barraControladora");
 
+        using var itemDialogCapture = new UnoDialogCapture(page);
+        using var itemBusinessRuleCapture = new UnoBusinessRuleResponseCapture(page);
         await FillByNameAsync(page, "codItem", itemCode);
-        var itemDialogMessage = await SubmitCurrentFormAndCaptureDialogAsync(
-            page,
-            "osw0001.do?method=buscarItem",
-            "barraControladora");
+        await SubmitCurrentFormAsync(page, "osw0001.do?method=buscarItem", "barraControladora", "codItem");
+        var itemDialogMessage = await itemDialogCapture.WaitForMessageAsync(5_000);
         if (!string.IsNullOrWhiteSpace(itemDialogMessage))
         {
             return BuildResult(
@@ -415,7 +424,26 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
                 categoryCode,
                 false,
                 "UNO_ITEM_REJEITADO",
-                itemDialogMessage,
+                BuildItemRejectedReason(itemDialogMessage),
+                null);
+        }
+
+        var itemBusinessRuleMessage = await WaitForItemRejectedReasonAsync(page, itemBusinessRuleCapture, 2_000);
+        if (!string.IsNullOrWhiteSpace(itemBusinessRuleMessage))
+        {
+            return BuildResult(
+                serialValidation.Serial,
+                cnpj,
+                customer.Name,
+                serialValidation.ProductCode,
+                serialValidation.ProductDescription,
+                defect,
+                isUnderWarranty,
+                warrantyUntil,
+                categoryCode,
+                false,
+                "UNO_ITEM_REJEITADO",
+                itemBusinessRuleMessage,
                 null);
         }
 
@@ -438,10 +466,142 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         await SelectByNameAsync(page, "motivo", "1");
         await SelectByNameAsync(page, "codStatusDefeito", "1");
 
+        var filledFormBusinessRuleMessage = await WaitForItemRejectedReasonAsync(page, itemBusinessRuleCapture, 500);
+        if (!string.IsNullOrWhiteSpace(filledFormBusinessRuleMessage))
+        {
+            return BuildResult(
+                serialValidation.Serial,
+                cnpj,
+                customer.Name,
+                serialValidation.ProductCode,
+                serialValidation.ProductDescription,
+                defect,
+                isUnderWarranty,
+                warrantyUntil,
+                categoryCode,
+                false,
+                "UNO_ITEM_REJEITADO",
+                filledFormBusinessRuleMessage,
+                null);
+        }
+
+        var pendingItemDialogMessage = itemDialogCapture.LatestMessage;
+        if (!string.IsNullOrWhiteSpace(pendingItemDialogMessage))
+        {
+            return BuildResult(
+                serialValidation.Serial,
+                cnpj,
+                customer.Name,
+                serialValidation.ProductCode,
+                serialValidation.ProductDescription,
+                defect,
+                isUnderWarranty,
+                warrantyUntil,
+                categoryCode,
+                false,
+                "UNO_ITEM_REJEITADO",
+                BuildItemRejectedReason(pendingItemDialogMessage),
+                null);
+        }
+
         await SubmitCurrentFormAsync(page, "osw0001.do?method=gravarDados", "barraControladora", "defeitoRelatado");
+        var firstSaveBusinessRuleMessage = await WaitForItemRejectedReasonAsync(page, itemBusinessRuleCapture, 2_000);
+        if (!string.IsNullOrWhiteSpace(firstSaveBusinessRuleMessage))
+        {
+            return BuildResult(
+                serialValidation.Serial,
+                cnpj,
+                customer.Name,
+                serialValidation.ProductCode,
+                serialValidation.ProductDescription,
+                defect,
+                isUnderWarranty,
+                warrantyUntil,
+                categoryCode,
+                false,
+                "UNO_ITEM_REJEITADO",
+                firstSaveBusinessRuleMessage,
+                null);
+        }
+
+        var firstSaveDialogMessage = await itemDialogCapture.WaitForMessageAsync(2_000);
+        if (!string.IsNullOrWhiteSpace(firstSaveDialogMessage))
+        {
+            return BuildResult(
+                serialValidation.Serial,
+                cnpj,
+                customer.Name,
+                serialValidation.ProductCode,
+                serialValidation.ProductDescription,
+                defect,
+                isUnderWarranty,
+                warrantyUntil,
+                categoryCode,
+                false,
+                "UNO_ITEM_REJEITADO",
+                BuildItemRejectedReason(firstSaveDialogMessage),
+                null);
+        }
+
         await SubmitCurrentFormAsync(page, "osw0001.do?method=gravarDados&cmd=gravar", "barraControladora", "defeitoRelatado");
+        var secondSaveBusinessRuleMessage = await WaitForItemRejectedReasonAsync(page, itemBusinessRuleCapture, 2_000);
+        if (!string.IsNullOrWhiteSpace(secondSaveBusinessRuleMessage))
+        {
+            return BuildResult(
+                serialValidation.Serial,
+                cnpj,
+                customer.Name,
+                serialValidation.ProductCode,
+                serialValidation.ProductDescription,
+                defect,
+                isUnderWarranty,
+                warrantyUntil,
+                categoryCode,
+                false,
+                "UNO_ITEM_REJEITADO",
+                secondSaveBusinessRuleMessage,
+                null);
+        }
+
+        var secondSaveDialogMessage = await itemDialogCapture.WaitForMessageAsync(2_000);
+        if (!string.IsNullOrWhiteSpace(secondSaveDialogMessage))
+        {
+            return BuildResult(
+                serialValidation.Serial,
+                cnpj,
+                customer.Name,
+                serialValidation.ProductCode,
+                serialValidation.ProductDescription,
+                defect,
+                isUnderWarranty,
+                warrantyUntil,
+                categoryCode,
+                false,
+                "UNO_ITEM_REJEITADO",
+                BuildItemRejectedReason(secondSaveDialogMessage),
+                null);
+        }
 
         var (serviceOrderCode, finalHtml) = await WaitForServiceOrderCodeAsync(page);
+        var finalBusinessRuleMessage = ExtractItemRejectedReason(finalHtml);
+        if (!string.IsNullOrWhiteSpace(finalBusinessRuleMessage))
+        {
+            return BuildResult(
+                serialValidation.Serial,
+                cnpj,
+                customer.Name,
+                serialValidation.ProductCode,
+                serialValidation.ProductDescription,
+                defect,
+                isUnderWarranty,
+                warrantyUntil,
+                categoryCode,
+                false,
+                "UNO_ITEM_REJEITADO",
+                finalBusinessRuleMessage,
+                null);
+        }
+
         if (string.IsNullOrWhiteSpace(serviceOrderCode))
         {
             var artifact = await SaveFailureArtifactsAsync(page, $"uno-os-not-confirmed-{serialValidation.Serial.Replace('/', '-')}");
@@ -682,7 +842,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         try
         {
             await SubmitCurrentFormAsync(page, action, target, preferredFieldName);
-            var completed = await Task.WhenAny(dialogHandled.Task, Task.Delay(600));
+            var completed = await Task.WhenAny(dialogHandled.Task, Task.Delay(2_000));
             return completed == dialogHandled.Task
                 ? await dialogHandled.Task
                 : string.IsNullOrWhiteSpace(dialogMessage) ? null : dialogMessage;
@@ -855,6 +1015,64 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         return string.Join(Environment.NewLine, parts);
     }
 
+    private static string BuildItemRejectedReason(string dialogMessage)
+    {
+        var match = Regex.Match(
+            dialogMessage,
+            @"Nr\s+de\s+S(?:[eé]rie|Ã©rie|érie)\s+j(?:[aá]|Ã¡)\s+usado\s+na\s+OS\s+(?<code>\d+)",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        return match.Success
+            ? $"Serial ja esta sendo utilizado na O.S {match.Groups["code"].Value}. O.S nao foi aberta."
+            : dialogMessage;
+    }
+
+    private static async Task<string?> GetItemRejectedReasonFromPageAsync(IPage page)
+    {
+        var html = await GetAllFramesContentAsync(page);
+        return ExtractItemRejectedReason(html);
+    }
+
+    private static async Task<string?> WaitForItemRejectedReasonAsync(
+        IPage page,
+        UnoBusinessRuleResponseCapture responseCapture,
+        int timeoutMs)
+    {
+        var responseMessage = await responseCapture.WaitForMessageAsync(timeoutMs);
+        if (!string.IsNullOrWhiteSpace(responseMessage))
+        {
+            return responseMessage;
+        }
+
+        return await GetItemRejectedReasonFromPageAsync(page);
+    }
+
+    private static string? ExtractItemRejectedReason(string content)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return null;
+        }
+
+        var decoded = WebUtility.HtmlDecode(content);
+        var match = Regex.Match(
+            decoded,
+            @"Produto\s+com\s+Nr\s+de\s+S(?:[eé]rie|Ã©rie|érie)\s+j(?:[aá]|Ã¡)\s+usado\s+na\s+OS\s+(?<code>\d+)",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        if (!match.Success)
+        {
+            match = Regex.Match(
+                decoded,
+                @"Nr\s+de\s+S(?:[eé]rie|Ã©rie|érie)\s+j(?:[aá]|Ã¡)\s+usado\s+na\s+OS\s+(?<code>\d+)",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+
+        return match.Success
+            ? $"Serial ja esta sendo utilizado na O.S {match.Groups["code"].Value}. O.S nao foi aberta."
+            : null;
+    }
+
     private string? GetConfigurationError()
     {
         return string.IsNullOrWhiteSpace(_options.BaseUrl)
@@ -934,6 +1152,137 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
     }
 
     private sealed record CustomerLookup(string Code, string Name, string Cnpj);
+
+    private sealed class UnoDialogCapture : IDisposable
+    {
+        private readonly IPage _page;
+        private readonly object _sync = new();
+        private readonly TaskCompletionSource<string?> _dialogHandled =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private string? _latestMessage;
+
+        public UnoDialogCapture(IPage page)
+        {
+            _page = page;
+            _page.Dialog += HandleDialog;
+        }
+
+        public string? LatestMessage
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _latestMessage;
+                }
+            }
+        }
+
+        public async Task<string?> WaitForMessageAsync(int timeoutMs)
+        {
+            var latestMessage = LatestMessage;
+            if (!string.IsNullOrWhiteSpace(latestMessage))
+            {
+                return latestMessage;
+            }
+
+            var completed = await Task.WhenAny(_dialogHandled.Task, Task.Delay(timeoutMs));
+            return completed == _dialogHandled.Task
+                ? await _dialogHandled.Task
+                : LatestMessage;
+        }
+
+        public void Dispose()
+        {
+            _page.Dialog -= HandleDialog;
+        }
+
+        private async void HandleDialog(object? _, IDialog dialog)
+        {
+            var message = dialog.Message;
+            lock (_sync)
+            {
+                _latestMessage = message;
+            }
+
+            _dialogHandled.TrySetResult(message);
+            await dialog.AcceptAsync();
+        }
+    }
+
+    private sealed class UnoBusinessRuleResponseCapture : IDisposable
+    {
+        private readonly IPage _page;
+        private readonly object _sync = new();
+        private readonly TaskCompletionSource<string?> _messageHandled =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private string? _latestMessage;
+
+        public UnoBusinessRuleResponseCapture(IPage page)
+        {
+            _page = page;
+            _page.Response += HandleResponse;
+        }
+
+        public async Task<string?> WaitForMessageAsync(int timeoutMs)
+        {
+            var latestMessage = LatestMessage;
+            if (!string.IsNullOrWhiteSpace(latestMessage))
+            {
+                return latestMessage;
+            }
+
+            var completed = await Task.WhenAny(_messageHandled.Task, Task.Delay(timeoutMs));
+            return completed == _messageHandled.Task
+                ? await _messageHandled.Task
+                : LatestMessage;
+        }
+
+        public void Dispose()
+        {
+            _page.Response -= HandleResponse;
+        }
+
+        private string? LatestMessage
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _latestMessage;
+                }
+            }
+        }
+
+        private async void HandleResponse(object? _, IResponse response)
+        {
+            if (!response.Url.Contains("osw0001.do?method=", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            try
+            {
+                var body = await response.TextAsync();
+                var message = ExtractItemRejectedReason(body);
+                if (string.IsNullOrWhiteSpace(message))
+                {
+                    return;
+                }
+
+                lock (_sync)
+                {
+                    _latestMessage = message;
+                }
+
+                _messageHandled.TrySetResult(message);
+            }
+            catch (Exception)
+            {
+                // Response bodies are best-effort diagnostics here; frame/dialog checks still run.
+            }
+        }
+    }
 
     private sealed class UnoSessionEndedException : InvalidOperationException
     {
