@@ -275,7 +275,6 @@ function App() {
   const [partToSend, setPartToSend] = React.useState('');
   const [unoObservations, setUnoObservations] = React.useState('');
   const [spocResolution, setSpocResolution] = React.useState<SpocIdBlockNextResponse | null>(null);
-  const [openIdBlockNextServiceOrder, setOpenIdBlockNextServiceOrder] = React.useState(false);
   const [response, setResponse] = React.useState<ApiResponse>(emptyResponse);
   const [copied, setCopied] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
@@ -291,7 +290,6 @@ function App() {
     || response.status === 'OS_ABERTA'
     || response.status === 'SPOC_SERIAL_ENCONTRADO';
   const serials = splitSerials(serial);
-  const idBlockNextSerial = spocResolution?.nextSerial ?? '';
   const canSubmit = requestMode === 'idblock-next'
     ? serial.trim().length > 0
     : serials.length > 0
@@ -300,11 +298,6 @@ function App() {
       && (requestMode === 'maintenance' || requestMode === 'exchange' || partToSend.trim().length > 0);
   const eligibleResults = response.results.filter((result) => result.status === 'APTO' && result.extraction.serial);
   const canOpenServiceOrder = (requestMode === 'maintenance' || requestMode === 'exchange') && eligibleResults.length > 0;
-  const canOpenIdBlockNextRma = requestMode === 'idblock-next'
-    && openIdBlockNextServiceOrder
-    && Boolean(idBlockNextSerial)
-    && cnpj.trim().length > 0
-    && serviceOrderDefect.trim().length > 0;
 
   React.useEffect(() => {
     let active = true;
@@ -419,10 +412,6 @@ function App() {
   }
 
   async function openServiceOrder(type: RequestMode) {
-    const orderSerials = type === 'idblock-next'
-      ? [idBlockNextSerial]
-      : serials;
-
     const apiResponse = await fetch(`${apiBaseUrl}/api/rma/service-order/open`, {
       method: 'POST',
       headers: {
@@ -434,12 +423,10 @@ function App() {
         maintenanceInWarranty,
         partToSend: type === 'parts' ? partToSend : null,
         unoObservations: null,
-        items: orderSerials.map((item) => ({
+        items: serials.map((item) => ({
           serial: item,
           defectReported: serviceOrderDefect,
-          unoObservations: type === 'idblock-next'
-            ? partToSend.trim() || null
-            : type === 'exchange'
+          unoObservations: type === 'maintenance' || type === 'exchange'
               ? unoObservations.trim() || null
               : null,
         })),
@@ -520,47 +507,6 @@ function App() {
     }
   }
 
-  async function handleOpenIdBlockNextRma() {
-    setOpeningServiceOrder(true);
-    setServiceOrderStatus(null);
-    setError(null);
-
-    try {
-      const serviceOrderResponse = await openServiceOrder('idblock-next');
-      const openedCodes = serviceOrderResponse.items
-        .filter((item) => item.serviceOrderCode)
-        .map((item) => `${item.serial}: O.S ${item.serviceOrderCode}`);
-      const failedItems = serviceOrderResponse.items
-        .filter((item) => item.status !== 'OS_ABERTA')
-        .map((item) => `${item.serial}: ${item.reason || item.status}`);
-      setServiceOrderStatus([
-        serviceOrderResponse.message,
-        ...openedCodes,
-        ...failedItems,
-      ].join('\n'));
-      setResponse({
-        status: serviceOrderResponse.status,
-        isHtml: response.isHtml,
-        responseBody: response.responseBody,
-        results: serviceOrderResponse.items.map((item) => ({
-          extraction: {
-            serial: item.serial,
-            cnpj: item.cnpj || cnpj,
-            defeito: serviceOrderDefect,
-          },
-          status: item.status,
-          reason: item.reason,
-          missingFields: [],
-        })),
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Falha ao abrir a O.S no sistema interno.';
-      setError(message);
-    } finally {
-      setOpeningServiceOrder(false);
-    }
-  }
-
   function handleReset() {
     setSerial('');
     setCnpj('');
@@ -569,7 +515,6 @@ function App() {
     setPartToSend('');
     setUnoObservations('');
     setSpocResolution(null);
-    setOpenIdBlockNextServiceOrder(false);
     setResponse(emptyResponse);
     setError(null);
     setCopied(false);
@@ -691,32 +636,8 @@ function App() {
                     aria-label="Informe um ou mais numeros de serie"
                   />
                 )}
-                {requestMode === 'idblock-next' ? (
-                  <label className="checkbox-row" htmlFor="idblock-open-os">
-                    <input
-                      id="idblock-open-os"
-                      type="checkbox"
-                      checked={openIdBlockNextServiceOrder}
-                      onChange={(event) => setOpenIdBlockNextServiceOrder(event.target.checked)}
-                    />
-                    <span>Abertura de O.S</span>
-                  </label>
-                ) : null}
-                {requestMode !== 'idblock-next' || openIdBlockNextServiceOrder ? (
+                {requestMode !== 'idblock-next' ? (
                   <>
-                    {requestMode === 'idblock-next' ? (
-                      <>
-                        <label htmlFor="cnpj-input">CNPJ da revenda</label>
-                        <input
-                          id="cnpj-input"
-                          value={cnpj}
-                          onChange={(event) => setCnpj(event.target.value)}
-                          placeholder="11222333000181"
-                          spellCheck="false"
-                          aria-label="Informe o CNPJ da revenda"
-                        />
-                      </>
-                    ) : null}
                     <label htmlFor="service-order-defect">Defeito relatado</label>
                     <textarea
                       id="service-order-defect"
@@ -726,20 +647,7 @@ function App() {
                       spellCheck="false"
                       aria-label="Informe o defeito relatado"
                     />
-                    {requestMode === 'idblock-next' ? (
-                      <>
-                        <label htmlFor="part-input">Observacoes</label>
-                        <textarea
-                          id="part-input"
-                          value={partToSend}
-                          onChange={(event) => setPartToSend(event.target.value)}
-                          placeholder="Observacoes para a O.S"
-                          spellCheck="false"
-                          aria-label="Informe observacoes para a O.S"
-                        />
-                      </>
-                    ) : null}
-                    {requestMode === 'exchange' ? (
+                    {requestMode === 'maintenance' || requestMode === 'exchange' ? (
                       <>
                         <label htmlFor="uno-observations">Observacoes</label>
                         <textarea
@@ -838,16 +746,6 @@ function App() {
                   <button type="button" onClick={requestMode === 'exchange' ? handleOpenExchangeServiceOrder : handleOpenServiceOrder} disabled={openingServiceOrder}>
                     {requestMode === 'exchange' ? <RefreshCw size={18} /> : <Wrench size={18} />}
                     <span>{openingServiceOrder ? 'Abrindo O.S' : 'Abrir O.S'}</span>
-                  </button>
-                  {serviceOrderStatus ? <p>{serviceOrderStatus}</p> : null}
-                </div>
-              ) : null}
-              {requestMode === 'idblock-next' && spocResolution?.nextSerial && openIdBlockNextServiceOrder ? (
-                <div className="service-order-prompt">
-                  <span>Deseja abrir a O.S da IDBlock Next no UNO?</span>
-                  <button type="button" onClick={handleOpenIdBlockNextRma} disabled={openingServiceOrder || !canOpenIdBlockNextRma}>
-                    <Send size={18} />
-                    <span>{openingServiceOrder ? 'Abrindo O.S' : 'Abrir O.S no UNO'}</span>
                   </button>
                   {serviceOrderStatus ? <p>{serviceOrderStatus}</p> : null}
                 </div>
