@@ -73,6 +73,7 @@ function statusLabel(status: string) {
     SPOC_SERIAL_ENCONTRADO: 'NEXT encontrada',
     SPOC_SERIAL_NAO_ENCONTRADO: 'Nao encontrado no SPOC',
     SPOC_ERRO: 'Erro no SPOC',
+    TECNICO_INVALIDO: 'Tecnico invalido',
     PENDENTE: 'Pendente',
     ERRO: 'Erro',
   };
@@ -270,6 +271,7 @@ function App() {
   const [requestMode, setRequestMode] = React.useState<RequestMode>('maintenance');
   const [serial, setSerial] = React.useState('');
   const [cnpj, setCnpj] = React.useState('');
+  const [technicianCode, setTechnicianCode] = React.useState('');
   const [serviceOrderDefect, setServiceOrderDefect] = React.useState('');
   const [maintenanceInWarranty, setMaintenanceInWarranty] = React.useState(false);
   const [partToSend, setPartToSend] = React.useState('');
@@ -295,9 +297,12 @@ function App() {
     : serials.length > 0
       && cnpj.trim().length > 0
       && serviceOrderDefect.trim().length > 0
-      && (requestMode === 'maintenance' || requestMode === 'exchange' || partToSend.trim().length > 0);
+      && (requestMode === 'maintenance' || requestMode === 'exchange' || partToSend.trim().length > 0)
+      && (requestMode !== 'parts' || technicianCode.trim().length > 0);
   const eligibleResults = response.results.filter((result) => result.status === 'APTO' && result.extraction.serial);
-  const canOpenServiceOrder = (requestMode === 'maintenance' || requestMode === 'exchange') && eligibleResults.length > 0;
+  const canOpenServiceOrder = (requestMode === 'maintenance' || requestMode === 'exchange')
+    && eligibleResults.length > 0
+    && technicianCode.trim().length > 0;
 
   React.useEffect(() => {
     let active = true;
@@ -423,6 +428,7 @@ function App() {
         maintenanceInWarranty,
         partToSend: type === 'parts' ? partToSend : null,
         unoObservations: null,
+        technicianCode: technicianCode.trim(),
         items: serials.map((item) => ({
           serial: item,
           defectReported: serviceOrderDefect,
@@ -510,6 +516,7 @@ function App() {
   function handleReset() {
     setSerial('');
     setCnpj('');
+    setTechnicianCode('');
     setServiceOrderDefect('');
     setMaintenanceInWarranty(false);
     setPartToSend('');
@@ -605,6 +612,16 @@ function App() {
               <div className="serial-panel">
                 {requestMode === 'idblock-next' ? null : (
                   <>
+                    <label htmlFor="technician-code-input">Codigo do tecnico no UNO</label>
+                    <input
+                      id="technician-code-input"
+                      value={technicianCode}
+                      onChange={(event) => setTechnicianCode(event.target.value)}
+                      placeholder="906"
+                      inputMode="numeric"
+                      spellCheck="false"
+                      aria-label="Informe o codigo do tecnico no UNO"
+                    />
                     <label htmlFor="cnpj-input">CNPJ da revenda</label>
                     <input
                       id="cnpj-input"
