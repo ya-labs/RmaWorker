@@ -18,7 +18,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
     private const int ExchangeOutOfWarrantyCategoryCode = 4;
     private const int PartsShipmentWarrantyCategoryCode = 7;
     private const int PartsShipmentOutOfWarrantyCategoryCode = 8;
-    private const int AttendantCode = 906;
+    private const int DefaultAttendantCode = 906;
     private const int Quantity = 1;
 
     private static readonly SemaphoreSlim BrowserLock = new(1, 1);
@@ -71,6 +71,11 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             return new RmaServiceOrderResponseDto("PECA_AUSENTE", "Informe a peca a ser enviada antes de abrir a O.S no UNO.", []);
         }
 
+        if (!TryParseTechnicianCode(request.TechnicianCode, out var technicianCode))
+        {
+            return new RmaServiceOrderResponseDto("TECNICO_INVALIDO", "Informe um codigo de tecnico valido para abrir a O.S no UNO.", []);
+        }
+
         if (string.IsNullOrWhiteSpace(request.Cnpj) || !_cnpjValidator.IsValid(request.Cnpj))
         {
             return new RmaServiceOrderResponseDto("CNPJ_INVALIDO", "Informe um CNPJ valido para buscar a revenda no UNO.", []);
@@ -116,7 +121,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         await BrowserLock.WaitAsync(cancellationToken);
         try
         {
-            return await OpenWithBrowserAsync(request, cancellationToken);
+            return await OpenWithBrowserAsync(request, technicianCode, cancellationToken);
         }
         finally
         {
@@ -199,6 +204,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
 
     private async Task<RmaServiceOrderResponseDto> OpenWithBrowserAsync(
         RmaServiceOrderRequestDto request,
+        int technicianCode,
         CancellationToken cancellationToken)
     {
         using var playwright = await Playwright.CreateAsync();
@@ -241,7 +247,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
                     foreach (var item in request.Items)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
-                        results.Add(await OpenItemServiceOrderAsync(page, customer, request, item));
+                        results.Add(await OpenItemServiceOrderAsync(page, customer, request, item, technicianCode));
                     }
 
                     var failed = results.Where(result => result.Status != "OS_ABERTA").ToList();
@@ -358,7 +364,8 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         IPage page,
         CustomerLookup customer,
         RmaServiceOrderRequestDto request,
-        RmaServiceOrderItemRequestDto item)
+        RmaServiceOrderItemRequestDto item,
+        int technicianCode)
     {
         var cnpj = request.Cnpj!;
         var isPartsShipment = string.Equals(request.RequestType, "parts", StringComparison.OrdinalIgnoreCase);
@@ -458,7 +465,8 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
 
         await FillByNameAsync(page, "codCategoria", categoryCode.ToString(CultureInfo.InvariantCulture));
         await SelectByNameAsync(page, "codCategoria", categoryCode.ToString(CultureInfo.InvariantCulture));
-        await FillByNameAsync(page, "codAtendente", AttendantCode.ToString(CultureInfo.InvariantCulture));
+        await FillByNameAsync(page, "codAtendente", technicianCode.ToString(CultureInfo.InvariantCulture));
+        await FillByNameAsync(page, "codResponsavel", technicianCode.ToString(CultureInfo.InvariantCulture));
         await FillByNameAsync(page, "defeitoRelatado", defect);
         await FillByNameAsync(page, "observacoes", observations);
         await FillByNameAsync(page, "qtd", "1");
@@ -646,7 +654,8 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             true,
             "OS_ABERTA",
             null,
-            serviceOrderCode);
+            serviceOrderCode,
+            technicianCode);
     }
 
     private async Task<string?> FindItemAsync(IPage page, string customerCode, string serial)
@@ -970,7 +979,8 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         bool ready,
         string status,
         string? reason,
-        string? serviceOrderCode)
+        string? serviceOrderCode,
+        int attendantCode = DefaultAttendantCode)
     {
         var categoryCode = categoryCodeOverride ?? (isUnderWarranty ? WarrantyCategoryCode : OutOfWarrantyCategoryCode);
         var categoryDescription = categoryCode switch
@@ -992,7 +1002,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             CostCenterCode,
             categoryCode,
             categoryDescription,
-            AttendantCode,
+            attendantCode,
             Quantity,
             isUnderWarranty,
             warrantyUntil,
@@ -1000,6 +1010,12 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             status,
             reason,
             serviceOrderCode);
+    }
+
+    private static bool TryParseTechnicianCode(string? value, out int technicianCode)
+    {
+        return int.TryParse(value?.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out technicianCode)
+            && technicianCode > 0;
     }
 
     private static string BuildObservations(
