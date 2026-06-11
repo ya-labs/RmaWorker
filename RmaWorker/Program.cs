@@ -4,7 +4,6 @@ using RmaWorker.Interfaces;
 using RmaWorker.Services;
 using RmaWorker.Validators;
 using Microsoft.Playwright;
-using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -131,9 +130,6 @@ app.MapPost("/api/rma/service-order/open", async (
 app.MapPost("/api/rma/spoc/idblock-next/resolve", async (
     SpocIdBlockNextRequestDto request,
     ISpocSerialResolverService spocSerialResolverService,
-    ISerialValidationService serialValidationService,
-    IEmailResponseService emailResponseService,
-    IOptions<SerialValidationOptions> serialValidationOptions,
     ILogger<Program> logger,
     CancellationToken cancellationToken) =>
 {
@@ -160,100 +156,27 @@ app.MapPost("/api/rma/spoc/idblock-next/resolve", async (
                 "Nao foi encontrado IDBlock Next relacionado ao serial informado no SPOC."));
         }
 
-        SerialValidationResultDto serialValidation;
-        try
-        {
-            serialValidation = await serialValidationService.ValidateAsync(
-                resolution.NextSerial,
-                cancellationToken);
-        }
-        catch (HttpRequestException ex)
-        {
-            logger.LogError(
-                ex,
-                "Falha ao consultar serial IDBlock Next {NextSerial} no UNO apos resolver no SPOC.",
-                resolution.NextSerial);
-            return Results.Ok(new SpocIdBlockNextResponseDto(
-                "UNO_INDISPONIVEL",
-                $"A IDBlock Next foi encontrada no SPOC, mas a consulta ao UNO falhou: {ex.Message}",
+        return Results.Ok(new SpocIdBlockNextResponseDto(
+                "SPOC_SERIAL_ENCONTRADO",
+                "Serial da IDBlock Next encontrado no SPOC.",
                 resolution.InputSerial,
                 null,
                 resolution.NextSerial,
                 false,
-                $"Serial da IDBlock Next encontrado no SPOC: {resolution.NextSerial}\n\nNao foi possivel consultar esse serial no UNO: {ex.Message}"));
-        }
-
-        if (!serialValidation.Exists)
-        {
-            serialValidation = await ReconsultNextSerialDirectAsync(
-                resolution.NextSerial,
-                serialValidationOptions.Value,
-                logger,
-                cancellationToken);
-
-            if (!serialValidation.Exists)
-            {
-                return Results.Ok(new SpocIdBlockNextResponseDto(
-                    "SERIAL_NAO_ENCONTRADO",
-                    "A IDBlock Next foi encontrada no SPOC, mas o serial nao foi encontrado no UNO.",
-                    resolution.InputSerial,
-                    null,
-                    resolution.NextSerial,
-                    false,
-                    $"Serial da IDBlock Next encontrado no SPOC: {resolution.NextSerial}\n\nEsse serial nao foi encontrado no UNO para gerar o template de manutencao."));
-            }
-        }
-
-        var warrantyUntil = serialValidation.InvoiceIssuedAt?.AddYears(1);
-        var isUnderWarranty = warrantyUntil.HasValue
-            && warrantyUntil.Value >= DateOnly.FromDateTime(DateTime.Today);
-        var result = new RmaProcessingResultDto(
-            new RmaExtractionDto(
-                serialValidation.Serial,
-                serialValidation.Cnpj,
-                null,
-                serialValidation.ProductDescription,
-                null,
-                false,
-                false,
-                true,
-                !string.IsNullOrWhiteSpace(serialValidation.Cnpj),
-                false),
-            "APTO",
-            null,
-            [],
-            new RmaTechnicalClassificationDto(
-                "APTO_PARA_ORIENTACAO_NF",
-                "Serial IDBlock Next localizado no SPOC e validado no UNO.",
-                []),
-            serialValidation,
-            null,
-            isUnderWarranty,
-            warrantyUntil);
-
-        var template = emailResponseService.BuildProcessingResponse([result]);
-
-        return Results.Ok(new SpocIdBlockNextResponseDto(
-            "SPOC_SERIAL_ENCONTRADO",
-            "Serial da IDBlock Next encontrado no SPOC e validado no UNO.",
-            resolution.InputSerial,
-            null,
-            resolution.NextSerial,
-            template.IsHtml,
-            template.ResponseBody));
+                $"Serial da IDBlock Next encontrado no SPOC: {resolution.NextSerial}"));
     }
     catch (Exception ex) when (ex is PlaywrightException or TimeoutException or InvalidOperationException or HttpRequestException)
     {
-        logger.LogError(ex, "Falha ao consultar serial IDBlock Next no SPOC/UNO.");
+        logger.LogError(ex, "Falha ao consultar serial IDBlock Next no SPOC.");
         return Results.Json(
             new SpocIdBlockNextResponseDto(
                 "SPOC_ERRO",
-                $"Falha ao consultar serial IDBlock Next no SPOC/UNO: {ex.Message}",
+                $"Falha ao consultar serial IDBlock Next no SPOC: {ex.Message}",
                 request.Serial,
                 null,
                 null,
                 false,
-                $"Falha ao consultar serial IDBlock Next no SPOC/UNO: {ex.Message}"),
+                $"Falha ao consultar serial IDBlock Next no SPOC: {ex.Message}"),
             statusCode: StatusCodes.Status500InternalServerError);
     }
 });
@@ -282,29 +205,3 @@ static bool IsAllowedOrigin(string origin, IReadOnlyCollection<string> allowedOr
         || origin.Equals("http://127.0.0.1:5173", StringComparison.OrdinalIgnoreCase);
 }
 
-static async Task<SerialValidationResultDto> ReconsultNextSerialDirectAsync(
-    string serial,
-    SerialValidationOptions options,
-    ILogger logger,
-    CancellationToken cancellationToken)
-{
-    var requestUri = SerialValidationService.BuildRequestUri(options.BaseUrl, serial);
-    logger.LogWarning(
-        "SerialValidationService retornou falso para {Serial}. Reconsultando UNO diretamente no fluxo IDBlock Next. Url: {RequestUri}",
-        serial,
-        requestUri);
-
-    using var httpClient = new HttpClient
-    {
-        Timeout = TimeSpan.FromSeconds(options.TimeoutSeconds)
-    };
-
-    var response = await httpClient.GetAsync(requestUri, cancellationToken);
-    var content = await response.Content.ReadAsStringAsync(cancellationToken);
-    logger.LogWarning(
-        "Reconsulta direta UNO IDBlock Next. HTTP {StatusCode} | Corpo inicial: {ResponsePreview}",
-        (int)response.StatusCode,
-        content.Length > 1000 ? content[..1000] : content);
-
-    return SerialValidationService.ParseUnoResponse(serial, content);
-}
