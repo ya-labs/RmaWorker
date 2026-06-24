@@ -171,14 +171,25 @@ public sealed class RmaProcessorService : IRmaProcessorService
             && !string.IsNullOrWhiteSpace(serialValidation.ProductCode))
         {
             var invoiceStartedAt = DateTimeOffset.UtcNow;
-            invoiceData = await _invoicePdfService.ExtractAsync(
-                serialValidation.InvoiceLink,
-                serialValidation.ProductCode,
-                cancellationToken);
-            _logger.LogInformation(
-                "Extracao PDF concluida em {ElapsedMs}ms para serial {Serial}.",
-                (DateTimeOffset.UtcNow - invoiceStartedAt).TotalMilliseconds,
-                extraction.Serial);
+            try
+            {
+                invoiceData = await _invoicePdfService.ExtractAsync(
+                    serialValidation.InvoiceLink,
+                    serialValidation.ProductCode,
+                    cancellationToken);
+                _logger.LogInformation(
+                    "Extracao PDF concluida em {ElapsedMs}ms para serial {Serial}.",
+                    (DateTimeOffset.UtcNow - invoiceStartedAt).TotalMilliseconds,
+                    extraction.Serial);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidDataException)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Falha ao extrair PDF da nota. O fluxo continuara sem dados extras da NF. Serial: {Serial} | Url: {InvoiceUrl}",
+                    extraction.Serial,
+                    serialValidation.InvoiceLink);
+            }
         }
         else if (!_invoiceOptions.EnablePdfExtraction)
         {
