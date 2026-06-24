@@ -212,7 +212,7 @@ public sealed class EmailResponseService : IEmailResponseService
         builder.AppendLine($"""
             <div style="margin: 14px 0 10px 0; color: {color}; font-weight: 700;">
             ------------------------------------<br>
-            RMA {rmaIndex} - Serie {Html(result.SerialValidation?.Serial)}<br>
+            RMA - Serie {Html(result.SerialValidation?.Serial)}<br>
             ------------------------------------
             </div>
             """);
