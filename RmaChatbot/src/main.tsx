@@ -1,7 +1,8 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { CheckCircle2, Clipboard, Download, FileText, PackagePlus, RefreshCw, RotateCcw, Search, Send, Settings, ShieldAlert, Wrench } from 'lucide-react';
+import { CheckCircle2, Clipboard, Download, FileText, Moon, PackagePlus, RefreshCw, RotateCcw, Search, Send, Settings, ShieldAlert, Sun, Wrench } from 'lucide-react';
 import './styles.css';
+import idSupportLogo from './assets/id-support-logo.png';
 
 type ApiResult = {
   extraction: {
@@ -53,8 +54,8 @@ type InvoiceLookupResponse = {
   base64Pdf?: string | null;
 };
 
-type HealthStatus = 'checking' | 'online' | 'offline';
 type RequestMode = 'maintenance' | 'parts' | 'exchange' | 'idblock-next' | 'invoice';
+type AppTheme = 'light' | 'dark';
 
 const emptyResponse: ApiResponse = {
   status: 'AGUARDANDO',
@@ -66,6 +67,17 @@ const emptyResponse: ApiResponse = {
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? '';
 const unoLoginCookieName = 'rmaworker_uno_login';
 const unoPasswordCookieName = 'rmaworker_uno_password';
+const themeStorageKey = 'idsupport_theme';
+
+function getInitialTheme(): AppTheme {
+  const savedTheme = window.localStorage.getItem(themeStorageKey);
+
+  if (savedTheme === 'light' || savedTheme === 'dark') {
+    return savedTheme;
+  }
+
+  return 'light';
+}
 
 function getCookie(name: string) {
   const prefix = `${name}=`;
@@ -122,7 +134,7 @@ function serialSummary(response: ApiResponse) {
     .filter((serial): serial is string => Boolean(serial));
 
   if (serials.length === 0) {
-    return 'Nao identificado';
+    return '-';
   }
 
   if (serials.length === 1) {
@@ -299,6 +311,7 @@ function html(value: string) {
 }
 
 function App() {
+  const [theme, setTheme] = React.useState<AppTheme>(getInitialTheme);
   const [requestMode, setRequestMode] = React.useState<RequestMode>('maintenance');
   const [serial, setSerial] = React.useState('');
   const [invoiceNumber, setInvoiceNumber] = React.useState('');
@@ -319,7 +332,6 @@ function App() {
   const [openingServiceOrder, setOpeningServiceOrder] = React.useState(false);
   const [serviceOrderStatus, setServiceOrderStatus] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
-  const [healthStatus, setHealthStatus] = React.useState<HealthStatus>('checking');
 
   const extraction = response.results.length > 1
     ? { ...firstExtraction(response), serial: serialSummary(response) }
@@ -343,35 +355,32 @@ function App() {
   const eligibleResults = response.results.filter((result) => result.status === 'APTO' && result.extraction.serial);
   const canOpenServiceOrder = (requestMode === 'maintenance' || requestMode === 'exchange')
     && eligibleResults.length > 0;
+  const resultTitle = requestMode === 'invoice'
+    ? 'Nota fiscal'
+    : requestMode === 'idblock-next'
+      ? 'Consulta SPOC'
+      : 'Resposta sugerida';
+  const resultAriaLabel = requestMode === 'invoice'
+    ? 'Resultado da busca de nota fiscal'
+    : requestMode === 'idblock-next'
+      ? 'Resultado da consulta IDBlock Next'
+      : 'Resposta sugerida';
+  const isEmptyResult = response.status === 'AGUARDANDO' && !error;
+  const emptyStateTitle = requestMode === 'invoice'
+    ? 'Aguardando numero da NF'
+    : requestMode === 'idblock-next'
+      ? 'Aguardando serial do IDFace'
+      : 'Aguardando dados da solicitacao';
+  const emptyStateDescription = requestMode === 'invoice'
+    ? 'Digite o número da nota fiscal para visualizar o PDF e baixar o arquivo.'
+    : requestMode === 'idblock-next'
+      ? 'Digite o serial do IDFace para consultar o SPOC e retornar a IDBlock Next.'
+      : 'Preencha os campos do formulário para consultar o UNO e montar a resposta.';
+  const canCopyResult = requestMode !== 'invoice' && !isEmptyResult;
 
   React.useEffect(() => {
-    let active = true;
-
-    async function checkHealth() {
-      try {
-        const healthResponse = await fetch(`${apiBaseUrl}/api/health`, {
-          cache: 'no-store',
-        });
-
-        if (active) {
-          setHealthStatus(healthResponse.ok ? 'online' : 'offline');
-        }
-      } catch {
-        if (active) {
-          setHealthStatus('offline');
-        }
-      }
-    }
-
-    setHealthStatus('checking');
-    void checkHealth();
-    const intervalId = window.setInterval(checkHealth, 15000);
-
-    return () => {
-      active = false;
-      window.clearInterval(intervalId);
-    };
-  }, []);
+    window.localStorage.setItem(themeStorageKey, theme);
+  }, [theme]);
 
   async function handleGenerate() {
     setLoading(true);
@@ -526,6 +535,12 @@ function App() {
   }
 
   async function handleCopy() {
+    if (requestMode === 'idblock-next' && spocResolution?.nextSerial) {
+      await navigator.clipboard.writeText(spocResolution.nextSerial);
+      setCopied(true);
+      return;
+    }
+
     if (response.isHtml && 'ClipboardItem' in window) {
       const html = new Blob([response.responseBody], { type: 'text/html' });
       const text = new Blob([plainTextFromHtml(response.responseBody)], { type: 'text/plain' });
@@ -633,17 +648,18 @@ function App() {
   }
 
   return (
-    <main className="app-shell">
-      <section className="workspace" aria-label="Assistente RMA">
+    <main className="app-shell" data-theme={theme}>
+      <section className="workspace" aria-label="iDSupport">
         <header className="topbar">
-          <div>
-            <p className="eyebrow">Triagem e abertura no UNO</p>
-            <h1>Assistente RMA</h1>
-          </div>
           <div className="topbar-actions">
-            <button className="settings-button" type="button" onClick={() => setShowSettings((value) => !value)} title="Configuracoes">
-              <Settings size={18} />
-              <span>Configuracoes</span>
+            <button
+              className="theme-toggle"
+              type="button"
+              onClick={() => setTheme((currentTheme) => currentTheme === 'dark' ? 'light' : 'dark')}
+              title={theme === 'dark' ? 'Usar modo claro' : 'Usar modo escuro'}
+              aria-label={theme === 'dark' ? 'Usar modo claro' : 'Usar modo escuro'}
+            >
+              {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
             </button>
             <div className={`status-pill ${isReady ? 'status-ready' : 'status-warning'}`}>
               {isReady ? <CheckCircle2 size={18} /> : <ShieldAlert size={18} />}
@@ -652,65 +668,11 @@ function App() {
           </div>
         </header>
 
-        <div className={`api-health health-${healthStatus}`}>
-          <span className="health-dot" aria-hidden="true" />
-          <span>
-            API {healthStatus === 'checking' ? 'verificando' : healthStatus === 'online' ? 'online' : 'offline'}
-          </span>
-        </div>
-
-        {showSettings ? (
-          <section className="settings-panel" aria-label="Configuracoes da integracao">
-            <div className="message-header">
-              <Settings size={18} />
-              <span>Integracao do sistema interno</span>
-            </div>
-            <div className="settings-grid">
-              <div>
-                <label htmlFor="uno-login-input">Login</label>
-                <input
-                  id="uno-login-input"
-                  value={unoLogin}
-                  onChange={(event) => setUnoLogin(event.target.value)}
-                  placeholder="usuario do sistema interno"
-                  autoComplete="username"
-                  spellCheck="false"
-                />
-              </div>
-              <div>
-                <label htmlFor="uno-password-input">Senha</label>
-                <input
-                  id="uno-password-input"
-                  type="password"
-                  value={unoPassword}
-                  onChange={(event) => setUnoPassword(event.target.value)}
-                  placeholder="senha do sistema interno"
-                  autoComplete="current-password"
-                />
-              </div>
-              <div className="settings-actions">
-                <button className="primary-button" type="button" onClick={handleSaveSettings}>
-                  <Settings size={18} />
-                  <span>Salvar</span>
-                </button>
-                <button className="secondary-button" type="button" onClick={handleClearSettings}>
-                  <RotateCcw size={18} />
-                  <span>Limpar</span>
-                </button>
-              </div>
-            </div>
-            <p className="settings-note">
-              {settingsSaved
-                ? 'Configuracoes salvas neste navegador.'
-                : unoLogin && unoPassword
-                  ? 'A abertura de O.S usara o login configurado neste navegador.'
-                  : 'Sem credenciais locais, a API usa a configuracao padrao do ambiente.'}
-            </p>
-          </section>
-        ) : null}
-
         <div className="chat-layout">
-          <section className="composer" aria-label="Entrada dos dados">
+          <aside className={showSettings ? 'sidebar settings-open' : 'sidebar'} aria-label="Navegacao do assistente">
+            <div className="brand-panel">
+              <img className="brand-logo" src={idSupportLogo} alt="iDSupport" />
+            </div>
             <div className="mode-switch" role="tablist" aria-label="Tipo de solicitacao">
               <button
                 className={requestMode === 'maintenance' ? 'mode-button active' : 'mode-button'}
@@ -718,10 +680,10 @@ function App() {
                 onClick={() => setRequestMode('maintenance')}
                 role="tab"
                 aria-selected={requestMode === 'maintenance'}
-                title="Manutencao"
+                title="Manutenção"
               >
                 <Wrench size={18} />
-                <span>Manutencao</span>
+                <span>Manutenção</span>
               </button>
               <button
                 className={requestMode === 'parts' ? 'mode-button active' : 'mode-button'}
@@ -780,23 +742,66 @@ function App() {
                 <span>IDBlock Next</span>
               </button>
             </div>
-            <div className="message incoming">
+            {showSettings ? (
+              <section className="settings-popover" aria-label="Configuracoes da integracao">
+                <div>
+                  <label htmlFor="uno-login-input">Login UNO</label>
+                  <input
+                    id="uno-login-input"
+                    value={unoLogin}
+                    onChange={(event) => setUnoLogin(event.target.value)}
+                    placeholder="usuario"
+                    autoComplete="username"
+                    spellCheck="false"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="uno-password-input">Senha UNO</label>
+                  <input
+                    id="uno-password-input"
+                    type="password"
+                    value={unoPassword}
+                    onChange={(event) => setUnoPassword(event.target.value)}
+                    placeholder="senha"
+                    autoComplete="current-password"
+                  />
+                </div>
+                <div className="settings-actions">
+                  <button className="settings-mini-button save" type="button" onClick={handleSaveSettings}>
+                    <Settings size={17} />
+                    <span>Salvar</span>
+                  </button>
+                  <button className="settings-mini-button clear" type="button" onClick={handleClearSettings}>
+                    <RotateCcw size={17} />
+                    <span>Limpar</span>
+                  </button>
+                </div>
+              </section>
+            ) : null}
+            <button className="settings-button" type="button" onClick={() => setShowSettings((value) => !value)} title="Configuracoes">
+              <Settings size={18} />
+              <span>Configuracoes</span>
+            </button>
+          </aside>
+
+          <section className="composer" aria-label="Entrada dos dados">
+            <div className="message incoming flow-card">
               <div className="message-header">
                 {requestMode === 'maintenance' ? <Wrench size={18} /> : requestMode === 'parts' ? <PackagePlus size={18} /> : requestMode === 'exchange' ? <RefreshCw size={18} /> : requestMode === 'invoice' ? <FileText size={18} /> : <Search size={18} />}
-                <span>{requestMode === 'maintenance' ? 'Manutencao' : requestMode === 'parts' ? 'Envio de pecas' : requestMode === 'exchange' ? 'Troca' : requestMode === 'invoice' ? 'Buscar NF' : 'IDBlock Next'}</span>
+                <span>{requestMode === 'maintenance' ? 'Manutenção' : requestMode === 'parts' ? 'Envio de pecas' : requestMode === 'exchange' ? 'Troca' : requestMode === 'invoice' ? 'Buscar NF' : 'IDBlock Next'}</span>
               </div>
               <div className="serial-panel">
                 {requestMode === 'invoice' ? (
                   <>
-                    <label htmlFor="invoice-number-input">Numero da nota fiscal</label>
+                    <label htmlFor="invoice-number-input">Número</label>
                     <input
                       id="invoice-number-input"
                       value={invoiceNumber}
                       onChange={(event) => setInvoiceNumber(event.target.value)}
-                      placeholder="Informe o numero da NF"
+                      placeholder="Informe o número da NF"
                       inputMode="numeric"
                       spellCheck="false"
-                      aria-label="Informe o numero da nota fiscal"
+                      aria-label="Informe o número da nota fiscal"
                     />
                   </>
                 ) : null}
@@ -814,7 +819,7 @@ function App() {
                   </>
                 )}
                 {requestMode === 'invoice' ? null : (
-                  <label htmlFor="serial-input">{requestMode === 'idblock-next' ? 'Serial do IDFace' : 'Series dos equipamentos'}</label>
+                  <label htmlFor="serial-input">{requestMode === 'idblock-next' ? 'Serial do IDFace' : 'Número de série dos equipamentos'}</label>
                 )}
                 {requestMode === 'invoice' ? null : requestMode === 'idblock-next' ? (
                   <input
@@ -848,14 +853,14 @@ function App() {
                     />
                     {requestMode === 'maintenance' || requestMode === 'exchange' ? (
                       <>
-                        <label htmlFor="uno-observations">Observacoes</label>
+                        <label htmlFor="uno-observations">Observações</label>
                         <textarea
                           id="uno-observations"
                           value={unoObservations}
                           onChange={(event) => setUnoObservations(event.target.value)}
-                          placeholder="Observacoes para a O.S"
+                          placeholder="Observações para a O.S"
                           spellCheck="false"
-                          aria-label="Informe observacoes para a O.S"
+                          aria-label="Informe observações para a O.S"
                         />
                       </>
                     ) : null}
@@ -866,7 +871,7 @@ function App() {
                         checked={maintenanceInWarranty}
                         onChange={(event) => setMaintenanceInWarranty(event.target.checked)}
                       />
-                      <span>{requestMode === 'parts' ? 'Envio de pecas' : requestMode === 'exchange' ? 'Troca' : 'Manutencao'} em garantia liberada manualmente</span>
+                      <span>{requestMode === 'parts' ? 'Envio de pecas' : requestMode === 'exchange' ? 'Troca' : 'Manutenção'} em garantia liberada manualmente</span>
                     </label>
                   </>
                 ) : null}
@@ -896,7 +901,7 @@ function App() {
                   {loading
                     ? requestMode === 'idblock-next' ? 'Consultando SPOC' : requestMode === 'invoice' ? 'Buscando NF' : 'Consultando UNO'
                     : requestMode === 'maintenance'
-                      ? 'Gerar manutencao'
+                      ? 'Gerar manutenção'
                       : requestMode === 'exchange'
                         ? 'Gerar troca'
                         : requestMode === 'parts'
@@ -909,26 +914,28 @@ function App() {
             </div>
           </section>
 
-          <section className="result" aria-label="Resposta sugerida">
-            <div className="message outgoing">
+          <section className="result" aria-label={resultAriaLabel}>
+            <div className="message outgoing result-card">
               <div className="message-header">
-                <Clipboard size={18} />
-                <span>Resposta sugerida</span>
+                {requestMode === 'invoice' ? <FileText size={18} /> : requestMode === 'idblock-next' ? <Search size={18} /> : <Clipboard size={18} />}
+                <span>{resultTitle}</span>
               </div>
-              <div className="extracted-grid">
-                <div>
-                  <span>{requestMode === 'invoice' ? 'Nota fiscal' : 'Serie'}</span>
-                  <strong>{requestMode === 'invoice' ? invoiceLookup?.invoiceNumber || invoiceNumber || 'Nao identificado' : extraction?.serial || 'Nao identificado'}</strong>
+              {!isEmptyResult ? (
+                <div className="extracted-grid">
+                  <div>
+                    <span>{requestMode === 'invoice' ? 'Nota fiscal' : requestMode === 'idblock-next' ? 'Serial consultado' : 'Série'}</span>
+                    <strong>{requestMode === 'invoice' ? invoiceLookup?.invoiceNumber || invoiceNumber || '-' : requestMode === 'idblock-next' ? spocResolution?.inputSerial || serial || '-' : extraction?.serial || '-'}</strong>
+                  </div>
+                  <div>
+                    <span>{requestMode === 'invoice' ? 'Arquivo' : requestMode === 'idblock-next' ? 'Serial IDBlock Next' : 'CNPJ'}</span>
+                    <strong>{requestMode === 'invoice' ? invoiceLookup?.fileName || '-' : requestMode === 'idblock-next' ? spocResolution?.nextSerial || '-' : extraction?.cnpj || cnpj || '-'}</strong>
+                  </div>
+                  <div>
+                    <span>{requestMode === 'invoice' || requestMode === 'idblock-next' ? 'Status' : 'Defeito'}</span>
+                    <strong>{requestMode === 'invoice' || requestMode === 'idblock-next' ? statusLabel(response.status) : extraction?.defeito || serviceOrderDefect || '-'}</strong>
+                  </div>
                 </div>
-                <div>
-                  <span>{requestMode === 'invoice' ? 'Arquivo' : 'CNPJ'}</span>
-                  <strong>{requestMode === 'invoice' ? invoiceLookup?.fileName || 'Nao identificado' : extraction?.cnpj || cnpj || 'Nao identificado'}</strong>
-                </div>
-                <div>
-                  <span>{requestMode === 'invoice' ? 'Status' : 'Defeito'}</span>
-                  <strong>{requestMode === 'invoice' ? statusLabel(response.status) : extraction?.defeito || serviceOrderDefect || 'Nao identificado'}</strong>
-                </div>
-              </div>
+              ) : null}
               {requestMode === 'idblock-next' && spocResolution?.nextSerial ? (
                 <div className="next-serial-box">
                   <span>Serial da IDBlock Next encontrado no SPOC</span>
@@ -951,12 +958,20 @@ function App() {
               {error ? <div className="error-box">{error}</div> : null}
               {response.isHtml ? (
                 <div className="html-preview" dangerouslySetInnerHTML={{ __html: response.responseBody }} />
+              ) : isEmptyResult ? (
+                <div className="empty-state">
+                  <div className="empty-state-icon">
+                    {requestMode === 'invoice' ? <FileText size={28} /> : requestMode === 'idblock-next' ? <Search size={28} /> : <Clipboard size={28} />}
+                  </div>
+                  <strong>{emptyStateTitle}</strong>
+                  <span>{emptyStateDescription}</span>
+                </div>
               ) : (
                 <pre>{response.responseBody}</pre>
               )}
               {canOpenServiceOrder ? (
                 <div className="service-order-prompt">
-                  <span>{requestMode === 'exchange' ? 'Deseja abrir a O.S de troca no UNO?' : 'Deseja abrir a O.S de manutencao no UNO?'}</span>
+                  <span>{requestMode === 'exchange' ? 'Deseja abrir a O.S de troca no UNO?' : 'Deseja abrir a O.S de manutenção no UNO?'}</span>
                   <button type="button" onClick={requestMode === 'exchange' ? handleOpenExchangeServiceOrder : handleOpenServiceOrder} disabled={openingServiceOrder}>
                     {requestMode === 'exchange' ? <RefreshCw size={18} /> : <Wrench size={18} />}
                     <span>{openingServiceOrder ? 'Abrindo O.S' : 'Abrir O.S'}</span>
@@ -964,10 +979,12 @@ function App() {
                   {serviceOrderStatus ? <p>{serviceOrderStatus}</p> : null}
                 </div>
               ) : null}
-              <button className="copy-button" type="button" onClick={handleCopy} title="Copiar resposta">
-                <Clipboard size={18} />
-                <span>{copied ? 'Copiado' : 'Copiar resposta'}</span>
-              </button>
+              {canCopyResult ? (
+                <button className="copy-button" type="button" onClick={handleCopy} title={requestMode === 'idblock-next' ? 'Copiar serial' : 'Copiar resposta'}>
+                  <Clipboard size={18} />
+                  <span>{copied ? 'Copiado' : requestMode === 'idblock-next' ? 'Copiar serial' : 'Copiar resposta'}</span>
+                </button>
+              ) : null}
             </div>
           </section>
         </div>
