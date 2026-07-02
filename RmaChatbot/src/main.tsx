@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { CheckCircle2, Clipboard, Download, FileText, Moon, PackagePlus, RefreshCw, RotateCcw, Search, Send, Settings, ShieldAlert, Sun, Wrench } from 'lucide-react';
+import { CheckCircle2, Clipboard, Download, FileText, Moon, PackagePlus, PanelLeftClose, PanelLeftOpen, RefreshCw, RotateCcw, Search, Send, Settings, ShieldAlert, Sun, Wrench } from 'lucide-react';
 import './styles.css';
 import idSupportLogo from './assets/id-support-logo.png';
 
@@ -69,12 +69,14 @@ const unoLoginCookieName = 'rmaworker_uno_login';
 const unoPasswordCookieName = 'rmaworker_uno_password';
 const themeStorageKey = 'idsupport_theme';
 const formPaneWidthStorageKey = 'idsupport_form_pane_width';
+const sidebarCollapsedStorageKey = 'idsupport_sidebar_collapsed';
 const defaultFormPaneWidth = 430;
-const minFormPaneWidth = 340;
-const maxFormPaneWidth = 760;
-const sidebarWidth = 236;
+const minFormPaneWidth = 280;
+const maxFormPaneWidth = 1040;
+const expandedSidebarWidth = 236;
+const collapsedSidebarWidth = 76;
 const paneResizerWidth = 8;
-const minResultPaneWidth = 480;
+const minResultPaneWidth = 320;
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
@@ -90,7 +92,7 @@ function getInitialTheme(): AppTheme {
   return 'light';
 }
 
-function getMaxFormPaneWidth() {
+function getMaxFormPaneWidth(sidebarWidth = expandedSidebarWidth) {
   if (typeof window === 'undefined') {
     return maxFormPaneWidth;
   }
@@ -107,6 +109,10 @@ function getInitialFormPaneWidth() {
   }
 
   return clamp(defaultFormPaneWidth, minFormPaneWidth, getMaxFormPaneWidth());
+}
+
+function getInitialSidebarCollapsed() {
+  return window.localStorage.getItem(sidebarCollapsedStorageKey) === 'true';
 }
 
 function getCookie(name: string) {
@@ -344,6 +350,7 @@ function App() {
   const [theme, setTheme] = React.useState<AppTheme>(getInitialTheme);
   const [formPaneWidth, setFormPaneWidth] = React.useState(getInitialFormPaneWidth);
   const [isResizingPane, setIsResizingPane] = React.useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = React.useState(getInitialSidebarCollapsed);
   const [requestMode, setRequestMode] = React.useState<RequestMode>('maintenance');
   const [serial, setSerial] = React.useState('');
   const [invoiceNumber, setInvoiceNumber] = React.useState('');
@@ -415,6 +422,15 @@ function App() {
   }, [theme]);
 
   React.useEffect(() => {
+    window.localStorage.setItem(sidebarCollapsedStorageKey, String(sidebarCollapsed));
+    setFormPaneWidth((currentWidth) => clamp(
+      currentWidth,
+      minFormPaneWidth,
+      getMaxFormPaneWidth(sidebarCollapsed ? collapsedSidebarWidth : expandedSidebarWidth),
+    ));
+  }, [sidebarCollapsed]);
+
+  React.useEffect(() => {
     if (window.innerWidth > 1180) {
       window.localStorage.setItem(formPaneWidthStorageKey, String(Math.round(formPaneWidth)));
     }
@@ -422,16 +438,24 @@ function App() {
 
   React.useEffect(() => {
     function handleWindowResize() {
-      setFormPaneWidth((currentWidth) => clamp(currentWidth, minFormPaneWidth, getMaxFormPaneWidth()));
+      setFormPaneWidth((currentWidth) => clamp(
+        currentWidth,
+        minFormPaneWidth,
+        getMaxFormPaneWidth(sidebarCollapsed ? collapsedSidebarWidth : expandedSidebarWidth),
+      ));
     }
 
     window.addEventListener('resize', handleWindowResize);
 
     return () => window.removeEventListener('resize', handleWindowResize);
-  }, []);
+  }, [sidebarCollapsed]);
 
   function updateFormPaneWidth(nextWidth: number) {
-    setFormPaneWidth(clamp(nextWidth, minFormPaneWidth, getMaxFormPaneWidth()));
+    setFormPaneWidth(clamp(
+      nextWidth,
+      minFormPaneWidth,
+      getMaxFormPaneWidth(sidebarCollapsed ? collapsedSidebarWidth : expandedSidebarWidth),
+    ));
   }
 
   function handlePaneResizeStart(event: React.PointerEvent<HTMLDivElement>) {
@@ -473,7 +497,7 @@ function App() {
 
     if (event.key === 'End') {
       event.preventDefault();
-      updateFormPaneWidth(getMaxFormPaneWidth());
+      updateFormPaneWidth(getMaxFormPaneWidth(sidebarCollapsed ? collapsedSidebarWidth : expandedSidebarWidth));
     }
   }
 
@@ -744,6 +768,7 @@ function App() {
 
   const layoutStyle = {
     '--form-pane-width': `${formPaneWidth}px`,
+    '--sidebar-width': `${sidebarCollapsed ? collapsedSidebarWidth : expandedSidebarWidth}px`,
   } as React.CSSProperties;
 
   return (
@@ -768,9 +793,29 @@ function App() {
         </header>
 
         <div className={isResizingPane ? 'chat-layout resizing-pane' : 'chat-layout'} style={layoutStyle}>
-          <aside className={showSettings ? 'sidebar settings-open' : 'sidebar'} aria-label="Navegacao do assistente">
+          <aside
+            className={[
+              'sidebar',
+              showSettings && !sidebarCollapsed ? 'settings-open' : '',
+              sidebarCollapsed ? 'collapsed' : '',
+            ].filter(Boolean).join(' ')}
+            aria-label="Navegacao do assistente"
+          >
             <div className="brand-panel">
               <img className="brand-logo" src={idSupportLogo} alt="iDSupport" />
+              <img className="brand-icon" src="/favicon.png" alt="iDSupport" />
+              <button
+                className="sidebar-toggle"
+                type="button"
+                onClick={() => {
+                  setSidebarCollapsed((value) => !value);
+                  setShowSettings(false);
+                }}
+                title={sidebarCollapsed ? 'Expandir menu' : 'Recolher menu'}
+                aria-label={sidebarCollapsed ? 'Expandir menu' : 'Recolher menu'}
+              >
+                {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+              </button>
             </div>
             <div className="mode-switch" role="tablist" aria-label="Tipo de solicitacao">
               <button
@@ -877,7 +922,20 @@ function App() {
                 </div>
               </section>
             ) : null}
-            <button className="settings-button" type="button" onClick={() => setShowSettings((value) => !value)} title="Configuracoes">
+            <button
+              className="settings-button"
+              type="button"
+              onClick={() => {
+                if (sidebarCollapsed) {
+                  setSidebarCollapsed(false);
+                  setShowSettings(true);
+                  return;
+                }
+
+                setShowSettings((value) => !value);
+              }}
+              title="Configuracoes"
+            >
               <Settings size={18} />
               <span>Configuracoes</span>
             </button>
@@ -897,7 +955,7 @@ function App() {
                       id="invoice-number-input"
                       value={invoiceNumber}
                       onChange={(event) => setInvoiceNumber(event.target.value)}
-                      placeholder="Informe o número da NF"
+                      placeholder="Digite o número da NF"
                       inputMode="numeric"
                       spellCheck="false"
                       aria-label="Informe o número da nota fiscal"
@@ -911,7 +969,7 @@ function App() {
                       id="cnpj-input"
                       value={cnpj}
                       onChange={(event) => setCnpj(event.target.value)}
-                      placeholder="11222333000181"
+                      placeholder="Digite o CNPJ da revenda"
                       spellCheck="false"
                       aria-label="Informe o CNPJ da revenda"
                     />
@@ -925,7 +983,7 @@ function App() {
                     id="serial-input"
                     value={serial}
                     onChange={(event) => setSerial(event.target.value)}
-                    placeholder="0A0000/000000"
+                    placeholder="Digite o serial do IDFace"
                     spellCheck="false"
                     aria-label="Informe o numero de serie do IDFace"
                   />
@@ -934,7 +992,7 @@ function App() {
                     id="serial-input"
                     value={serial}
                     onChange={(event) => setSerial(event.target.value)}
-                    placeholder={`0A0000/000000\n0B0000/000001`}
+                    placeholder="Digite um número de série por linha"
                     spellCheck="false"
                     aria-label="Informe um ou mais numeros de serie"
                   />
@@ -946,7 +1004,7 @@ function App() {
                       id="service-order-defect"
                       value={serviceOrderDefect}
                       onChange={(event) => setServiceOrderDefect(event.target.value)}
-                      placeholder="Descreva o defeito informado pelo cliente"
+                      placeholder="Digite o defeito informado pelo cliente"
                       spellCheck="false"
                       aria-label="Informe o defeito relatado"
                     />
@@ -957,7 +1015,7 @@ function App() {
                           id="uno-observations"
                           value={unoObservations}
                           onChange={(event) => setUnoObservations(event.target.value)}
-                          placeholder="Observações para a O.S"
+                          placeholder="Digite observações para a O.S"
                           spellCheck="false"
                           aria-label="Informe observações para a O.S"
                         />
@@ -981,7 +1039,7 @@ function App() {
                       id="part-input"
                       value={partToSend}
                       onChange={(event) => setPartToSend(event.target.value)}
-                      placeholder="Informe a peca"
+                      placeholder="Digite a peça"
                       spellCheck="false"
                       aria-label="Informe a peca a ser enviada"
                     />
@@ -1019,7 +1077,7 @@ function App() {
             aria-label="Ajustar largura entre formulario e resultado"
             aria-orientation="vertical"
             aria-valuemin={minFormPaneWidth}
-            aria-valuemax={getMaxFormPaneWidth()}
+            aria-valuemax={getMaxFormPaneWidth(sidebarCollapsed ? collapsedSidebarWidth : expandedSidebarWidth)}
             aria-valuenow={Math.round(formPaneWidth)}
             tabIndex={0}
             onPointerDown={handlePaneResizeStart}
@@ -1073,7 +1131,9 @@ function App() {
               ) : null}
               {error ? <div className="error-box">{error}</div> : null}
               {response.isHtml ? (
-                <div className="html-preview" dangerouslySetInnerHTML={{ __html: response.responseBody }} />
+                <div className="html-preview">
+                  <div className="email-preview-surface" dangerouslySetInnerHTML={{ __html: response.responseBody }} />
+                </div>
               ) : isEmptyResult ? (
                 <div className="empty-state">
                   <div className="empty-state-icon">
