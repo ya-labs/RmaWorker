@@ -7,4 +7,6 @@ public sealed record RmaServiceOrderRequestDto(
     bool MaintenanceInWarranty = false,
     string? PartToSend = null,
     string? UnoObservations = null,
-    string? TechnicianCode = null);
+    string? TechnicianCode = null,
+    string? UnoLogin = null,
+    string? UnoPassword = null);

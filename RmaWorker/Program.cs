@@ -13,6 +13,8 @@ builder.Services.Configure<InvoiceOptions>(
     builder.Configuration.GetSection(InvoiceOptions.SectionName));
 builder.Services.Configure<UnoErpOptions>(
     builder.Configuration.GetSection(UnoErpOptions.SectionName));
+builder.Services.Configure<UnoInvoiceOptions>(
+    builder.Configuration.GetSection(UnoInvoiceOptions.SectionName));
 builder.Services.Configure<SpocOptions>(
     builder.Configuration.GetSection(SpocOptions.SectionName));
 
@@ -81,6 +83,7 @@ builder.Services.AddSingleton<IUnoServiceOrderService>(serviceProvider =>
         serviceProvider.GetRequiredService<ICnpjValidator>(),
         serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<UnoErpOptions>>(),
         serviceProvider.GetRequiredService<ILogger<UnoServiceOrderService>>()));
+builder.Services.AddSingleton<IUnoInvoiceLookupService, UnoInvoiceLookupService>();
 
 var app = builder.Build();
 
@@ -123,6 +126,32 @@ app.MapPost("/api/rma/service-order/open", async (
                 status = "failed",
                 message = $"Falha ao abrir O.S no UNO: {ex.Message}"
             },
+            statusCode: StatusCodes.Status500InternalServerError);
+    }
+});
+
+app.MapPost("/api/rma/invoice/find", async (
+    InvoiceLookupRequestDto request,
+    IUnoInvoiceLookupService invoiceLookupService,
+    ILogger<Program> logger,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var response = await invoiceLookupService.FindAsync(request, cancellationToken);
+        return Results.Ok(response);
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Falha inesperada ao buscar NF no UNO.");
+        return Results.Json(
+            new InvoiceLookupResponseDto(
+                "failed",
+                $"Falha ao buscar NF no UNO: {ex.Message}",
+                request.InvoiceNumber,
+                null,
+                null,
+                null),
             statusCode: StatusCodes.Status500InternalServerError);
     }
 });
