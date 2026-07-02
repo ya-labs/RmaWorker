@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net;
 using System.Text.RegularExpressions;
@@ -20,8 +21,10 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
     private const int PartsShipmentOutOfWarrantyCategoryCode = 8;
     private const int DefaultAttendantCode = 906;
     private const int Quantity = 1;
+    private const int MaxConcurrentBrowsers = 3;
 
-    private static readonly SemaphoreSlim BrowserLock = new(1, 1);
+    private static readonly SemaphoreSlim BrowserConcurrencyLock = new(MaxConcurrentBrowsers, MaxConcurrentBrowsers);
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> BrowserLocksByLogin = new(StringComparer.OrdinalIgnoreCase);
 
     private static readonly Regex CustomerRowRegex = new(
         @"<td[^>]*>\s*&nbsp;(?<code>\d+)</td>\s*<td[^>]*>\s*&nbsp;(?<name>.*?)</td>\s*<td[^>]*>\s*&nbsp;(?<cnpj>[\d./-]+)</td>",
@@ -71,9 +74,13 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             return new RmaServiceOrderResponseDto("PECA_AUSENTE", "Informe a peca a ser enviada antes de abrir a O.S no UNO.", []);
         }
 
-        if (!TryParseTechnicianCode(request.TechnicianCode, out var technicianCode))
+        var technicianCode = TryParseTechnicianCode(request.TechnicianCode, out var parsedTechnicianCode)
+            ? parsedTechnicianCode
+            : (int?)null;
+        var credentials = ResolveCredentials(request.UnoLogin, request.UnoPassword);
+        if (credentials is null)
         {
-            return new RmaServiceOrderResponseDto("TECNICO_INVALIDO", "Informe um codigo de tecnico valido para abrir a O.S no UNO.", []);
+            return new RmaServiceOrderResponseDto("UNO_CONFIG_INCOMPLETA", "Configure login e senha do sistema interno antes de abrir a O.S.", []);
         }
 
         if (string.IsNullOrWhiteSpace(request.Cnpj) || !_cnpjValidator.IsValid(request.Cnpj))
@@ -109,7 +116,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
                 missingResults);
         }
 
-        var configurationError = GetConfigurationError();
+        var configurationError = GetConfigurationError(credentials);
         if (configurationError is not null)
         {
             return new RmaServiceOrderResponseDto(
@@ -118,14 +125,17 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
                 []);
         }
 
-        await BrowserLock.WaitAsync(cancellationToken);
+        var loginLock = GetBrowserLock(credentials.Login);
+        await loginLock.WaitAsync(cancellationToken);
+        await BrowserConcurrencyLock.WaitAsync(cancellationToken);
         try
         {
-            return await OpenWithBrowserAsync(request, technicianCode, cancellationToken);
+            return await OpenWithBrowserAsync(request, credentials, technicianCode, cancellationToken);
         }
         finally
         {
-            BrowserLock.Release();
+            BrowserConcurrencyLock.Release();
+            loginLock.Release();
         }
     }
 
@@ -144,7 +154,8 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
                 "Informe um CNPJ valido para buscar a revenda no UNO.");
         }
 
-        var configurationError = GetConfigurationError();
+        var credentials = ResolveCredentials(null, null);
+        var configurationError = GetConfigurationError(credentials);
         if (configurationError is not null)
         {
             return new UnoCustomerValidationDto(
@@ -156,7 +167,9 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
                 configurationError);
         }
 
-        await BrowserLock.WaitAsync(cancellationToken);
+        var loginLock = GetBrowserLock(credentials!.Login);
+        await loginLock.WaitAsync(cancellationToken);
+        await BrowserConcurrencyLock.WaitAsync(cancellationToken);
         try
         {
             using var playwright = await Playwright.CreateAsync();
@@ -180,7 +193,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
 
             try
             {
-                await LoginAsync(page);
+                await LoginAsync(page, credentials);
                 var customer = await FindCustomerAsync(page, cnpj);
                 return customer is null
                     ? new UnoCustomerValidationDto(false, null, null, cnpj, "CLIENTE_NAO_ENCONTRADO", "Nao foi encontrado cliente ativo no UNO para o CNPJ informado.")
@@ -198,13 +211,15 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         }
         finally
         {
-            BrowserLock.Release();
+            BrowserConcurrencyLock.Release();
+            loginLock.Release();
         }
     }
 
     private async Task<RmaServiceOrderResponseDto> OpenWithBrowserAsync(
         RmaServiceOrderRequestDto request,
-        int technicianCode,
+        UnoCredentials credentials,
+        int? technicianCode,
         CancellationToken cancellationToken)
     {
         using var playwright = await Playwright.CreateAsync();
@@ -232,7 +247,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             {
                 try
                 {
-                    await LoginAsync(page);
+                    await LoginAsync(page, credentials);
 
                     var customer = await FindCustomerAsync(page, request.Cnpj!);
                     if (customer is null)
@@ -278,13 +293,13 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         }
     }
 
-    private async Task LoginAsync(IPage page)
+    private async Task LoginAsync(IPage page, UnoCredentials credentials)
     {
         await page.GotoAsync(AbsoluteUrl("sgw0001.do?method=login"), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await EnsureLoginFormAsync(page);
 
-        await FillByNameAsync(page, "login", _options.Login);
-        await FillByNameAsync(page, "senha", _options.Password);
+        await FillByNameAsync(page, "login", credentials.Login);
+        await FillByNameAsync(page, "senha", credentials.Password);
         await SubmitCurrentFormAsync(page, "sgw0001.do?method=validarLogin");
         await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
 
@@ -365,7 +380,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         CustomerLookup customer,
         RmaServiceOrderRequestDto request,
         RmaServiceOrderItemRequestDto item,
-        int technicianCode)
+        int? technicianCode)
     {
         var cnpj = request.Cnpj!;
         var isPartsShipment = string.Equals(request.RequestType, "parts", StringComparison.OrdinalIgnoreCase);
@@ -465,8 +480,11 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
 
         await FillByNameAsync(page, "codCategoria", categoryCode.ToString(CultureInfo.InvariantCulture));
         await SelectByNameAsync(page, "codCategoria", categoryCode.ToString(CultureInfo.InvariantCulture));
-        await FillByNameAsync(page, "codAtendente", technicianCode.ToString(CultureInfo.InvariantCulture));
-        await FillByNameAsync(page, "codResponsavel", technicianCode.ToString(CultureInfo.InvariantCulture));
+        if (technicianCode.HasValue)
+        {
+            await FillByNameAsync(page, "codAtendente", technicianCode.Value.ToString(CultureInfo.InvariantCulture));
+            await FillByNameAsync(page, "codResponsavel", technicianCode.Value.ToString(CultureInfo.InvariantCulture));
+        }
         await FillByNameAsync(page, "defeitoRelatado", defect);
         await FillByNameAsync(page, "observacoes", observations);
         await FillByNameAsync(page, "qtd", "1");
@@ -655,7 +673,7 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             "OS_ABERTA",
             null,
             serviceOrderCode,
-            technicianCode);
+            technicianCode ?? DefaultAttendantCode);
     }
 
     private async Task<string?> FindItemAsync(IPage page, string customerCode, string serial)
@@ -1100,13 +1118,36 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
             : null;
     }
 
-    private string? GetConfigurationError()
+    private string? GetConfigurationError(UnoCredentials? credentials)
     {
         return string.IsNullOrWhiteSpace(_options.BaseUrl)
-            || string.IsNullOrWhiteSpace(_options.Login)
-            || string.IsNullOrWhiteSpace(_options.Password)
-            ? "Configure UnoErp__BaseUrl, UnoErp__Login e UnoErp__Password para acessar o UNO."
+            || credentials is null
+            || string.IsNullOrWhiteSpace(credentials.Login)
+            || string.IsNullOrWhiteSpace(credentials.Password)
+            ? "Configure UnoErp__BaseUrl e as credenciais do sistema interno para acessar o UNO."
             : null;
+    }
+
+    private UnoCredentials? ResolveCredentials(string? requestLogin, string? requestPassword)
+    {
+        var hasRequestLogin = !string.IsNullOrWhiteSpace(requestLogin);
+        var hasRequestPassword = !string.IsNullOrWhiteSpace(requestPassword);
+        if (hasRequestLogin || hasRequestPassword)
+        {
+            return hasRequestLogin && hasRequestPassword
+                ? new UnoCredentials(requestLogin!.Trim(), requestPassword!)
+                : null;
+        }
+
+        return string.IsNullOrWhiteSpace(_options.Login) || string.IsNullOrWhiteSpace(_options.Password)
+            ? null
+            : new UnoCredentials(_options.Login.Trim(), _options.Password);
+    }
+
+    private static SemaphoreSlim GetBrowserLock(string login)
+    {
+        var key = login.Trim();
+        return BrowserLocksByLogin.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
     }
 
     private string AbsoluteUrl(string path)
@@ -1318,4 +1359,6 @@ public sealed class UnoServiceOrderService : IUnoServiceOrderService
         {
         }
     }
+
+    private sealed record UnoCredentials(string Login, string Password);
 }
