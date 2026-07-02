@@ -68,6 +68,17 @@ const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? '';
 const unoLoginCookieName = 'rmaworker_uno_login';
 const unoPasswordCookieName = 'rmaworker_uno_password';
 const themeStorageKey = 'idsupport_theme';
+const formPaneWidthStorageKey = 'idsupport_form_pane_width';
+const defaultFormPaneWidth = 430;
+const minFormPaneWidth = 340;
+const maxFormPaneWidth = 760;
+const sidebarWidth = 236;
+const paneResizerWidth = 8;
+const minResultPaneWidth = 480;
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
 
 function getInitialTheme(): AppTheme {
   const savedTheme = window.localStorage.getItem(themeStorageKey);
@@ -77,6 +88,25 @@ function getInitialTheme(): AppTheme {
   }
 
   return 'light';
+}
+
+function getMaxFormPaneWidth() {
+  if (typeof window === 'undefined') {
+    return maxFormPaneWidth;
+  }
+
+  const availableWidth = window.innerWidth - sidebarWidth - paneResizerWidth - minResultPaneWidth;
+  return Math.max(minFormPaneWidth, Math.min(maxFormPaneWidth, availableWidth));
+}
+
+function getInitialFormPaneWidth() {
+  const savedWidth = Number(window.localStorage.getItem(formPaneWidthStorageKey));
+
+  if (Number.isFinite(savedWidth) && savedWidth > 0) {
+    return clamp(savedWidth, minFormPaneWidth, getMaxFormPaneWidth());
+  }
+
+  return clamp(defaultFormPaneWidth, minFormPaneWidth, getMaxFormPaneWidth());
 }
 
 function getCookie(name: string) {
@@ -312,6 +342,8 @@ function html(value: string) {
 
 function App() {
   const [theme, setTheme] = React.useState<AppTheme>(getInitialTheme);
+  const [formPaneWidth, setFormPaneWidth] = React.useState(getInitialFormPaneWidth);
+  const [isResizingPane, setIsResizingPane] = React.useState(false);
   const [requestMode, setRequestMode] = React.useState<RequestMode>('maintenance');
   const [serial, setSerial] = React.useState('');
   const [invoiceNumber, setInvoiceNumber] = React.useState('');
@@ -381,6 +413,69 @@ function App() {
   React.useEffect(() => {
     window.localStorage.setItem(themeStorageKey, theme);
   }, [theme]);
+
+  React.useEffect(() => {
+    if (window.innerWidth > 1180) {
+      window.localStorage.setItem(formPaneWidthStorageKey, String(Math.round(formPaneWidth)));
+    }
+  }, [formPaneWidth]);
+
+  React.useEffect(() => {
+    function handleWindowResize() {
+      setFormPaneWidth((currentWidth) => clamp(currentWidth, minFormPaneWidth, getMaxFormPaneWidth()));
+    }
+
+    window.addEventListener('resize', handleWindowResize);
+
+    return () => window.removeEventListener('resize', handleWindowResize);
+  }, []);
+
+  function updateFormPaneWidth(nextWidth: number) {
+    setFormPaneWidth(clamp(nextWidth, minFormPaneWidth, getMaxFormPaneWidth()));
+  }
+
+  function handlePaneResizeStart(event: React.PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+
+    const startX = event.clientX;
+    const startWidth = formPaneWidth;
+    setIsResizingPane(true);
+
+    function handlePointerMove(pointerEvent: PointerEvent) {
+      updateFormPaneWidth(startWidth + pointerEvent.clientX - startX);
+    }
+
+    function handlePointerUp() {
+      setIsResizingPane(false);
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    }
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+  }
+
+  function handlePaneResizeKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      updateFormPaneWidth(formPaneWidth - 24);
+    }
+
+    if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      updateFormPaneWidth(formPaneWidth + 24);
+    }
+
+    if (event.key === 'Home') {
+      event.preventDefault();
+      updateFormPaneWidth(minFormPaneWidth);
+    }
+
+    if (event.key === 'End') {
+      event.preventDefault();
+      updateFormPaneWidth(getMaxFormPaneWidth());
+    }
+  }
 
   async function handleGenerate() {
     setLoading(true);
@@ -647,6 +742,10 @@ function App() {
     setSettingsSaved(false);
   }
 
+  const layoutStyle = {
+    '--form-pane-width': `${formPaneWidth}px`,
+  } as React.CSSProperties;
+
   return (
     <main className="app-shell" data-theme={theme}>
       <section className="workspace" aria-label="iDSupport">
@@ -668,7 +767,7 @@ function App() {
           </div>
         </header>
 
-        <div className="chat-layout">
+        <div className={isResizingPane ? 'chat-layout resizing-pane' : 'chat-layout'} style={layoutStyle}>
           <aside className={showSettings ? 'sidebar settings-open' : 'sidebar'} aria-label="Navegacao do assistente">
             <div className="brand-panel">
               <img className="brand-logo" src={idSupportLogo} alt="iDSupport" />
@@ -913,6 +1012,23 @@ function App() {
               </button>
             </div>
           </section>
+
+          <div
+            className="pane-resizer"
+            role="separator"
+            aria-label="Ajustar largura entre formulario e resultado"
+            aria-orientation="vertical"
+            aria-valuemin={minFormPaneWidth}
+            aria-valuemax={getMaxFormPaneWidth()}
+            aria-valuenow={Math.round(formPaneWidth)}
+            tabIndex={0}
+            onPointerDown={handlePaneResizeStart}
+            onKeyDown={handlePaneResizeKeyDown}
+            onDoubleClick={() => updateFormPaneWidth(defaultFormPaneWidth)}
+            title="Arraste para ajustar. Duplo clique para restaurar."
+          >
+            <span />
+          </div>
 
           <section className="result" aria-label={resultAriaLabel}>
             <div className="message outgoing result-card">

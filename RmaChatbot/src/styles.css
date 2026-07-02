@@ -117,9 +117,19 @@ textarea {
   height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-columns: 236px minmax(390px, 0.76fr) minmax(610px, 1.5fr);
+  grid-template-columns: 236px minmax(340px, var(--form-pane-width, 430px)) 8px minmax(480px, 1fr);
   gap: 0;
   align-items: stretch;
+}
+
+.chat-layout.resizing-pane {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.chat-layout.resizing-pane .composer,
+.chat-layout.resizing-pane .result {
+  pointer-events: none;
 }
 
 .sidebar {
@@ -341,6 +351,58 @@ textarea {
   flex-direction: column;
 }
 
+.pane-resizer {
+  position: relative;
+  min-width: 8px;
+  width: 8px;
+  min-height: 0;
+  border: 0;
+  border-left: 1px solid #d7dee8;
+  border-right: 1px solid #d7dee8;
+  background: #eef2f6;
+  cursor: col-resize;
+  outline: 0;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.pane-resizer::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 54px;
+  border-radius: 999px;
+  background: #c5cfdb;
+  transform: translate(-50%, -50%);
+  transition: height 0.16s ease, background 0.16s ease;
+}
+
+.pane-resizer span {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 1px;
+  height: 30px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  transform: translate(-50%, -50%);
+}
+
+.pane-resizer:hover,
+.pane-resizer:focus-visible,
+.chat-layout.resizing-pane .pane-resizer {
+  border-color: #c5cfdb;
+  background: #e4eaf2;
+}
+
+.pane-resizer:hover::before,
+.pane-resizer:focus-visible::before,
+.chat-layout.resizing-pane .pane-resizer::before {
+  height: 86px;
+  background: #d71920;
+}
+
 .message {
   min-width: 0;
   min-height: 0;
@@ -387,6 +449,57 @@ textarea {
   background:
     linear-gradient(180deg, #fbfcfe 0%, #f4f7fb 100%);
   overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+.serial-panel,
+pre,
+.html-preview,
+.invoice-preview iframe {
+  scrollbar-width: thin;
+  scrollbar-color: #a7b0bd transparent;
+}
+
+.serial-panel {
+  scrollbar-width: none;
+}
+
+.serial-panel::-webkit-scrollbar,
+pre::-webkit-scrollbar,
+.html-preview::-webkit-scrollbar,
+.invoice-preview iframe::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.serial-panel::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.serial-panel::-webkit-scrollbar-track,
+pre::-webkit-scrollbar-track,
+.html-preview::-webkit-scrollbar-track,
+.invoice-preview iframe::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.serial-panel::-webkit-scrollbar-thumb,
+pre::-webkit-scrollbar-thumb,
+.html-preview::-webkit-scrollbar-thumb,
+.invoice-preview iframe::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: #a7b0bd;
+  background-clip: content-box;
+}
+
+.serial-panel::-webkit-scrollbar-thumb:hover,
+pre::-webkit-scrollbar-thumb:hover,
+.html-preview::-webkit-scrollbar-thumb:hover,
+.invoice-preview iframe::-webkit-scrollbar-thumb:hover {
+  background: #8f9bad;
+  background-clip: content-box;
 }
 
 .serial-panel label {
@@ -780,6 +893,43 @@ pre {
     linear-gradient(180deg, #0f1726 0%, #0c1320 100%);
 }
 
+.app-shell[data-theme="dark"] .pane-resizer {
+  border-color: #243044;
+  background: #0b111c;
+}
+
+.app-shell[data-theme="dark"] .pane-resizer::before {
+  background: #3d4a5e;
+}
+
+.app-shell[data-theme="dark"] .pane-resizer:hover,
+.app-shell[data-theme="dark"] .pane-resizer:focus-visible,
+.app-shell[data-theme="dark"] .chat-layout.resizing-pane .pane-resizer {
+  border-color: #334155;
+  background: #101827;
+}
+
+.app-shell[data-theme="dark"] .pane-resizer:hover::before,
+.app-shell[data-theme="dark"] .pane-resizer:focus-visible::before,
+.app-shell[data-theme="dark"] .chat-layout.resizing-pane .pane-resizer::before {
+  background: #d71920;
+}
+
+.app-shell[data-theme="dark"] .serial-panel,
+.app-shell[data-theme="dark"] pre,
+.app-shell[data-theme="dark"] .html-preview,
+.app-shell[data-theme="dark"] .invoice-preview iframe {
+  scrollbar-color: #475569 transparent;
+}
+
+.app-shell[data-theme="dark"] .serial-panel::-webkit-scrollbar-thumb,
+.app-shell[data-theme="dark"] pre::-webkit-scrollbar-thumb,
+.app-shell[data-theme="dark"] .html-preview::-webkit-scrollbar-thumb,
+.app-shell[data-theme="dark"] .invoice-preview iframe::-webkit-scrollbar-thumb {
+  background: #475569;
+  background-clip: content-box;
+}
+
 .app-shell[data-theme="dark"] .serial-panel label {
   color: #dbe3ee;
 }
@@ -894,8 +1044,60 @@ pre {
     grid-template-columns: 232px minmax(0, 1fr);
   }
 
+  .pane-resizer {
+    display: none;
+  }
+
   .result {
     grid-column: 2;
+  }
+}
+
+@media (max-height: 820px) and (min-width: 921px) {
+  .brand-panel {
+    padding: 10px 0 16px;
+  }
+
+  .brand-logo {
+    height: 40px;
+  }
+
+  .mode-switch {
+    gap: 4px;
+  }
+
+  .mode-button {
+    min-height: 38px;
+  }
+
+  .message-header {
+    min-height: 48px;
+  }
+
+  .serial-panel {
+    gap: 8px;
+    padding: 14px 18px 12px;
+  }
+
+  .serial-panel input {
+    min-height: 42px;
+  }
+
+  .serial-panel textarea {
+    min-height: 104px;
+  }
+
+  .serial-panel .checkbox-row {
+    min-height: 32px;
+    padding: 3px 2px;
+  }
+
+  .actions {
+    padding: 8px 18px 10px;
+  }
+
+  .settings-button {
+    min-height: 40px;
   }
 }
 
