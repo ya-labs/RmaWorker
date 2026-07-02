@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { CheckCircle2, Clipboard, PackagePlus, RefreshCw, RotateCcw, Search, Send, ShieldAlert, Wrench } from 'lucide-react';
+import { CheckCircle2, Clipboard, Download, FileText, PackagePlus, RefreshCw, RotateCcw, Search, Send, Settings, ShieldAlert, Wrench } from 'lucide-react';
 import './styles.css';
 
 type ApiResult = {
@@ -44,8 +44,17 @@ type SpocIdBlockNextResponse = {
   responseBody: string;
 };
 
+type InvoiceLookupResponse = {
+  status: string;
+  message: string;
+  invoiceNumber?: string | null;
+  fileName?: string | null;
+  contentType?: string | null;
+  base64Pdf?: string | null;
+};
+
 type HealthStatus = 'checking' | 'online' | 'offline';
-type RequestMode = 'maintenance' | 'parts' | 'exchange' | 'idblock-next';
+type RequestMode = 'maintenance' | 'parts' | 'exchange' | 'idblock-next' | 'invoice';
 
 const emptyResponse: ApiResponse = {
   status: 'AGUARDANDO',
@@ -55,6 +64,26 @@ const emptyResponse: ApiResponse = {
 };
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? '';
+const unoLoginCookieName = 'rmaworker_uno_login';
+const unoPasswordCookieName = 'rmaworker_uno_password';
+
+function getCookie(name: string) {
+  const prefix = `${name}=`;
+  return document.cookie
+    .split(';')
+    .map((item) => item.trim())
+    .find((item) => item.startsWith(prefix))
+    ?.slice(prefix.length) ?? '';
+}
+
+function setCookie(name: string, value: string) {
+  const secure = window.location.protocol === 'https:' ? '; Secure' : '';
+  document.cookie = `${name}=${encodeURIComponent(value)}; Max-Age=15552000; Path=/; SameSite=Lax${secure}`;
+}
+
+function deleteCookie(name: string) {
+  document.cookie = `${name}=; Max-Age=0; Path=/; SameSite=Lax`;
+}
 
 function statusLabel(status: string) {
   const labels: Record<string, string> = {
@@ -73,6 +102,8 @@ function statusLabel(status: string) {
     SPOC_SERIAL_ENCONTRADO: 'NEXT encontrada',
     SPOC_SERIAL_NAO_ENCONTRADO: 'Nao encontrado no SPOC',
     SPOC_ERRO: 'Erro no SPOC',
+    NF_ENCONTRADA: 'NF encontrada',
+    NF_NAO_ENCONTRADA: 'NF nao encontrada',
     TECNICO_INVALIDO: 'Tecnico invalido',
     PENDENTE: 'Pendente',
     ERRO: 'Erro',
@@ -270,13 +301,18 @@ function html(value: string) {
 function App() {
   const [requestMode, setRequestMode] = React.useState<RequestMode>('maintenance');
   const [serial, setSerial] = React.useState('');
+  const [invoiceNumber, setInvoiceNumber] = React.useState('');
   const [cnpj, setCnpj] = React.useState('');
-  const [technicianCode, setTechnicianCode] = React.useState('');
+  const [unoLogin, setUnoLogin] = React.useState(() => decodeURIComponent(getCookie(unoLoginCookieName)));
+  const [unoPassword, setUnoPassword] = React.useState(() => decodeURIComponent(getCookie(unoPasswordCookieName)));
+  const [showSettings, setShowSettings] = React.useState(false);
+  const [settingsSaved, setSettingsSaved] = React.useState(false);
   const [serviceOrderDefect, setServiceOrderDefect] = React.useState('');
   const [maintenanceInWarranty, setMaintenanceInWarranty] = React.useState(false);
   const [partToSend, setPartToSend] = React.useState('');
   const [unoObservations, setUnoObservations] = React.useState('');
   const [spocResolution, setSpocResolution] = React.useState<SpocIdBlockNextResponse | null>(null);
+  const [invoiceLookup, setInvoiceLookup] = React.useState<InvoiceLookupResponse | null>(null);
   const [response, setResponse] = React.useState<ApiResponse>(emptyResponse);
   const [copied, setCopied] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
@@ -290,19 +326,23 @@ function App() {
     : firstExtraction(response);
   const isReady = response.status === 'APTO'
     || response.status === 'OS_ABERTA'
-    || response.status === 'SPOC_SERIAL_ENCONTRADO';
+    || response.status === 'SPOC_SERIAL_ENCONTRADO'
+    || response.status === 'NF_ENCONTRADA';
   const serials = splitSerials(serial);
-  const canSubmit = requestMode === 'idblock-next'
-    ? serial.trim().length > 0
-    : serials.length > 0
+  const invoicePdfUrl = invoiceLookup?.base64Pdf
+    ? `data:${invoiceLookup.contentType || 'application/pdf'};base64,${invoiceLookup.base64Pdf}`
+    : '';
+  const canSubmit = requestMode === 'invoice'
+    ? invoiceNumber.trim().length > 0
+    : requestMode === 'idblock-next'
+      ? serial.trim().length > 0
+      : serials.length > 0
       && cnpj.trim().length > 0
       && serviceOrderDefect.trim().length > 0
-      && (requestMode === 'maintenance' || requestMode === 'exchange' || partToSend.trim().length > 0)
-      && (requestMode !== 'parts' || technicianCode.trim().length > 0);
+      && (requestMode === 'maintenance' || requestMode === 'exchange' || partToSend.trim().length > 0);
   const eligibleResults = response.results.filter((result) => result.status === 'APTO' && result.extraction.serial);
   const canOpenServiceOrder = (requestMode === 'maintenance' || requestMode === 'exchange')
-    && eligibleResults.length > 0
-    && technicianCode.trim().length > 0;
+    && eligibleResults.length > 0;
 
   React.useEffect(() => {
     let active = true;
@@ -338,8 +378,45 @@ function App() {
     setCopied(false);
     setError(null);
     setServiceOrderStatus(null);
+    setInvoiceLookup(null);
 
     try {
+      if (requestMode === 'invoice') {
+        const apiResponse = await fetch(`${apiBaseUrl}/api/rma/invoice/find`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            invoiceNumber,
+          }),
+        });
+
+        if (!apiResponse.ok) {
+          const body = await apiResponse.text();
+          throw new Error(body || `Erro HTTP ${apiResponse.status}`);
+        }
+
+        const invoiceResponse = await apiResponse.json() as InvoiceLookupResponse;
+        setInvoiceLookup(invoiceResponse);
+        setResponse({
+          status: invoiceResponse.status,
+          isHtml: false,
+          responseBody: invoiceResponse.message,
+          results: [
+            {
+              extraction: {
+                serial: invoiceResponse.invoiceNumber || invoiceNumber,
+              },
+              status: invoiceResponse.status,
+              reason: invoiceResponse.message,
+              missingFields: [],
+            },
+          ],
+        });
+        return;
+      }
+
       if (requestMode === 'idblock-next') {
         const apiResponse = await fetch(`${apiBaseUrl}/api/rma/spoc/idblock-next/resolve`, {
           method: 'POST',
@@ -428,7 +505,8 @@ function App() {
         maintenanceInWarranty,
         partToSend: type === 'parts' ? partToSend : null,
         unoObservations: null,
-        technicianCode: technicianCode.trim(),
+        unoLogin: unoLogin.trim() || null,
+        unoPassword: unoPassword || null,
         items: serials.map((item) => ({
           serial: item,
           defectReported: serviceOrderDefect,
@@ -515,17 +593,43 @@ function App() {
 
   function handleReset() {
     setSerial('');
+    setInvoiceNumber('');
     setCnpj('');
-    setTechnicianCode('');
     setServiceOrderDefect('');
     setMaintenanceInWarranty(false);
     setPartToSend('');
     setUnoObservations('');
     setSpocResolution(null);
+    setInvoiceLookup(null);
     setResponse(emptyResponse);
     setError(null);
     setCopied(false);
     setServiceOrderStatus(null);
+  }
+
+  function handleSaveSettings() {
+    if (unoLogin.trim()) {
+      setCookie(unoLoginCookieName, unoLogin.trim());
+    } else {
+      deleteCookie(unoLoginCookieName);
+    }
+
+    if (unoPassword) {
+      setCookie(unoPasswordCookieName, unoPassword);
+    } else {
+      deleteCookie(unoPasswordCookieName);
+    }
+
+    setSettingsSaved(true);
+    window.setTimeout(() => setSettingsSaved(false), 2500);
+  }
+
+  function handleClearSettings() {
+    setUnoLogin('');
+    setUnoPassword('');
+    deleteCookie(unoLoginCookieName);
+    deleteCookie(unoPasswordCookieName);
+    setSettingsSaved(false);
   }
 
   return (
@@ -536,9 +640,15 @@ function App() {
             <p className="eyebrow">Triagem e abertura no UNO</p>
             <h1>Assistente RMA</h1>
           </div>
-          <div className={`status-pill ${isReady ? 'status-ready' : 'status-warning'}`}>
-            {isReady ? <CheckCircle2 size={18} /> : <ShieldAlert size={18} />}
-            <span>{statusLabel(response.status)}</span>
+          <div className="topbar-actions">
+            <button className="settings-button" type="button" onClick={() => setShowSettings((value) => !value)} title="Configuracoes">
+              <Settings size={18} />
+              <span>Configuracoes</span>
+            </button>
+            <div className={`status-pill ${isReady ? 'status-ready' : 'status-warning'}`}>
+              {isReady ? <CheckCircle2 size={18} /> : <ShieldAlert size={18} />}
+              <span>{statusLabel(response.status)}</span>
+            </div>
           </div>
         </header>
 
@@ -548,6 +658,56 @@ function App() {
             API {healthStatus === 'checking' ? 'verificando' : healthStatus === 'online' ? 'online' : 'offline'}
           </span>
         </div>
+
+        {showSettings ? (
+          <section className="settings-panel" aria-label="Configuracoes da integracao">
+            <div className="message-header">
+              <Settings size={18} />
+              <span>Integracao do sistema interno</span>
+            </div>
+            <div className="settings-grid">
+              <div>
+                <label htmlFor="uno-login-input">Login</label>
+                <input
+                  id="uno-login-input"
+                  value={unoLogin}
+                  onChange={(event) => setUnoLogin(event.target.value)}
+                  placeholder="usuario do sistema interno"
+                  autoComplete="username"
+                  spellCheck="false"
+                />
+              </div>
+              <div>
+                <label htmlFor="uno-password-input">Senha</label>
+                <input
+                  id="uno-password-input"
+                  type="password"
+                  value={unoPassword}
+                  onChange={(event) => setUnoPassword(event.target.value)}
+                  placeholder="senha do sistema interno"
+                  autoComplete="current-password"
+                />
+              </div>
+              <div className="settings-actions">
+                <button className="primary-button" type="button" onClick={handleSaveSettings}>
+                  <Settings size={18} />
+                  <span>Salvar</span>
+                </button>
+                <button className="secondary-button" type="button" onClick={handleClearSettings}>
+                  <RotateCcw size={18} />
+                  <span>Limpar</span>
+                </button>
+              </div>
+            </div>
+            <p className="settings-note">
+              {settingsSaved
+                ? 'Configuracoes salvas neste navegador.'
+                : unoLogin && unoPassword
+                  ? 'A abertura de O.S usara o login configurado neste navegador.'
+                  : 'Sem credenciais locais, a API usa a configuracao padrao do ambiente.'}
+            </p>
+          </section>
+        ) : null}
 
         <div className="chat-layout">
           <section className="composer" aria-label="Entrada dos dados">
@@ -586,12 +746,28 @@ function App() {
                 <span>Troca</span>
               </button>
               <button
+                className={requestMode === 'invoice' ? 'mode-button active' : 'mode-button'}
+                type="button"
+                onClick={() => {
+                  setRequestMode('invoice');
+                  setInvoiceLookup(null);
+                  setResponse(emptyResponse);
+                  setServiceOrderStatus(null);
+                  setError(null);
+                }}
+                role="tab"
+                aria-selected={requestMode === 'invoice'}
+                title="Buscar NF"
+              >
+                <FileText size={18} />
+                <span>Buscar NF</span>
+              </button>
+              <button
                 className={requestMode === 'idblock-next' ? 'mode-button active' : 'mode-button'}
                 type="button"
                 onClick={() => {
                   setRequestMode('idblock-next');
                   setSpocResolution(null);
-                  setOpenIdBlockNextServiceOrder(false);
                   setResponse(emptyResponse);
                   setServiceOrderStatus(null);
                   setError(null);
@@ -606,22 +782,26 @@ function App() {
             </div>
             <div className="message incoming">
               <div className="message-header">
-                {requestMode === 'maintenance' ? <Wrench size={18} /> : requestMode === 'parts' ? <PackagePlus size={18} /> : requestMode === 'exchange' ? <RefreshCw size={18} /> : <Search size={18} />}
-                <span>{requestMode === 'maintenance' ? 'Manutencao' : requestMode === 'parts' ? 'Envio de pecas' : requestMode === 'exchange' ? 'Troca' : 'IDBlock Next'}</span>
+                {requestMode === 'maintenance' ? <Wrench size={18} /> : requestMode === 'parts' ? <PackagePlus size={18} /> : requestMode === 'exchange' ? <RefreshCw size={18} /> : requestMode === 'invoice' ? <FileText size={18} /> : <Search size={18} />}
+                <span>{requestMode === 'maintenance' ? 'Manutencao' : requestMode === 'parts' ? 'Envio de pecas' : requestMode === 'exchange' ? 'Troca' : requestMode === 'invoice' ? 'Buscar NF' : 'IDBlock Next'}</span>
               </div>
               <div className="serial-panel">
-                {requestMode === 'idblock-next' ? null : (
+                {requestMode === 'invoice' ? (
                   <>
-                    <label htmlFor="technician-code-input">Codigo do tecnico no UNO</label>
+                    <label htmlFor="invoice-number-input">Numero da nota fiscal</label>
                     <input
-                      id="technician-code-input"
-                      value={technicianCode}
-                      onChange={(event) => setTechnicianCode(event.target.value)}
-                      placeholder="906"
+                      id="invoice-number-input"
+                      value={invoiceNumber}
+                      onChange={(event) => setInvoiceNumber(event.target.value)}
+                      placeholder="Informe o numero da NF"
                       inputMode="numeric"
                       spellCheck="false"
-                      aria-label="Informe o codigo do tecnico no UNO"
+                      aria-label="Informe o numero da nota fiscal"
                     />
+                  </>
+                ) : null}
+                {requestMode === 'idblock-next' || requestMode === 'invoice' ? null : (
+                  <>
                     <label htmlFor="cnpj-input">CNPJ da revenda</label>
                     <input
                       id="cnpj-input"
@@ -633,8 +813,10 @@ function App() {
                     />
                   </>
                 )}
-                <label htmlFor="serial-input">{requestMode === 'idblock-next' ? 'Serial do IDFace' : 'Series dos equipamentos'}</label>
-                {requestMode === 'idblock-next' ? (
+                {requestMode === 'invoice' ? null : (
+                  <label htmlFor="serial-input">{requestMode === 'idblock-next' ? 'Serial do IDFace' : 'Series dos equipamentos'}</label>
+                )}
+                {requestMode === 'invoice' ? null : requestMode === 'idblock-next' ? (
                   <input
                     id="serial-input"
                     value={serial}
@@ -653,7 +835,7 @@ function App() {
                     aria-label="Informe um ou mais numeros de serie"
                   />
                 )}
-                {requestMode !== 'idblock-next' ? (
+                {requestMode !== 'idblock-next' && requestMode !== 'invoice' ? (
                   <>
                     <label htmlFor="service-order-defect">Defeito relatado</label>
                     <textarea
@@ -709,16 +891,18 @@ function App() {
                 <span>Limpar</span>
               </button>
               <button className="primary-button" type="button" onClick={handleGenerate} disabled={loading || !canSubmit} title="Executar">
-                {requestMode === 'idblock-next' ? <Search size={18} /> : <Send size={18} />}
+                {requestMode === 'idblock-next' ? <Search size={18} /> : requestMode === 'invoice' ? <FileText size={18} /> : <Send size={18} />}
                 <span>
                   {loading
-                    ? requestMode === 'idblock-next' ? 'Consultando SPOC' : 'Consultando UNO'
+                    ? requestMode === 'idblock-next' ? 'Consultando SPOC' : requestMode === 'invoice' ? 'Buscando NF' : 'Consultando UNO'
                     : requestMode === 'maintenance'
                       ? 'Gerar manutencao'
                       : requestMode === 'exchange'
                         ? 'Gerar troca'
                         : requestMode === 'parts'
                           ? 'Abrir O.S e gerar template'
+                          : requestMode === 'invoice'
+                            ? 'Buscar NF'
                           : 'Consultar SPOC'}
                 </span>
               </button>
@@ -733,22 +917,35 @@ function App() {
               </div>
               <div className="extracted-grid">
                 <div>
-                  <span>Serie</span>
-                  <strong>{extraction?.serial || 'Nao identificado'}</strong>
+                  <span>{requestMode === 'invoice' ? 'Nota fiscal' : 'Serie'}</span>
+                  <strong>{requestMode === 'invoice' ? invoiceLookup?.invoiceNumber || invoiceNumber || 'Nao identificado' : extraction?.serial || 'Nao identificado'}</strong>
                 </div>
                 <div>
-                  <span>CNPJ</span>
-                  <strong>{extraction?.cnpj || cnpj || 'Nao identificado'}</strong>
+                  <span>{requestMode === 'invoice' ? 'Arquivo' : 'CNPJ'}</span>
+                  <strong>{requestMode === 'invoice' ? invoiceLookup?.fileName || 'Nao identificado' : extraction?.cnpj || cnpj || 'Nao identificado'}</strong>
                 </div>
                 <div>
-                  <span>Defeito</span>
-                  <strong>{extraction?.defeito || serviceOrderDefect || 'Nao identificado'}</strong>
+                  <span>{requestMode === 'invoice' ? 'Status' : 'Defeito'}</span>
+                  <strong>{requestMode === 'invoice' ? statusLabel(response.status) : extraction?.defeito || serviceOrderDefect || 'Nao identificado'}</strong>
                 </div>
               </div>
               {requestMode === 'idblock-next' && spocResolution?.nextSerial ? (
                 <div className="next-serial-box">
                   <span>Serial da IDBlock Next encontrado no SPOC</span>
                   <strong>{spocResolution.nextSerial}</strong>
+                </div>
+              ) : null}
+              {requestMode === 'invoice' && invoiceLookup?.base64Pdf && invoicePdfUrl ? (
+                <div className="invoice-preview">
+                  <iframe title="Visualizacao da nota fiscal" src={invoicePdfUrl} />
+                  <a
+                    className="download-button"
+                    href={invoicePdfUrl}
+                    download={invoiceLookup.fileName || `nota-fiscal-${invoiceLookup.invoiceNumber || invoiceNumber}.pdf`}
+                  >
+                    <Download size={18} />
+                    <span>Baixar NF</span>
+                  </a>
                 </div>
               ) : null}
               {error ? <div className="error-box">{error}</div> : null}
