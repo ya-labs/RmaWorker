@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { CheckCircle2, Clipboard, Download, FileText, Moon, PackagePlus, PanelLeftClose, PanelLeftOpen, RefreshCw, RotateCcw, Search, Send, Settings, ShieldAlert, Sun, Wrench } from 'lucide-react';
 import './styles.css';
+import idIcon from './assets/id-icon.png';
 import idSupportLogo from './assets/id-support-logo.png';
 
 type ApiResult = {
@@ -803,7 +804,7 @@ function App() {
           >
             <div className="brand-panel">
               <img className="brand-logo" src={idSupportLogo} alt="iDSupport" />
-              <img className="brand-icon" src="/favicon.png" alt="iDSupport" />
+              <img className="brand-icon" src={idIcon} alt="" aria-hidden="true" />
               <button
                 className="sidebar-toggle"
                 type="button"

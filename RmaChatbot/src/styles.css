@@ -170,9 +170,11 @@ textarea {
 
 .brand-icon {
   display: none;
-  width: 34px;
-  height: 34px;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
   object-fit: contain;
+  font-size: 0;
 }
 
 .sidebar-toggle {
@@ -269,6 +271,7 @@ textarea {
   justify-content: center;
   flex-direction: column;
   gap: 10px;
+  min-height: 96px;
   padding: 8px 0 12px;
 }
 
