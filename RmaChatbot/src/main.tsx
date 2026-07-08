@@ -1,7 +1,9 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { CheckCircle2, Clipboard, Download, FileText, Moon, PackagePlus, RefreshCw, RotateCcw, Search, Send, Settings, ShieldAlert, Sun, Wrench } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { CheckCircle2, Clipboard, Download, FileText, Moon, PackagePlus, PanelLeftClose, PanelLeftOpen, RefreshCw, RotateCcw, Search, Send, Settings, ShieldAlert, Sun, Wrench } from 'lucide-react';
 import './styles.css';
+import idIcon from './assets/id-icon.png';
 import idSupportLogo from './assets/id-support-logo.png';
 
 type ApiResult = {
@@ -56,6 +58,15 @@ type InvoiceLookupResponse = {
 
 type RequestMode = 'maintenance' | 'parts' | 'exchange' | 'idblock-next' | 'invoice';
 type AppTheme = 'light' | 'dark';
+type TooltipPlacement = 'top' | 'bottom';
+
+type ActiveTooltip = {
+  description: string;
+  left: number;
+  top: number;
+  maxWidth: number;
+  placement: TooltipPlacement;
+};
 
 const emptyResponse: ApiResponse = {
   status: 'AGUARDANDO',
@@ -68,6 +79,19 @@ const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? '';
 const unoLoginCookieName = 'rmaworker_uno_login';
 const unoPasswordCookieName = 'rmaworker_uno_password';
 const themeStorageKey = 'idsupport_theme';
+const formPaneWidthStorageKey = 'idsupport_form_pane_width';
+const sidebarCollapsedStorageKey = 'idsupport_sidebar_collapsed';
+const defaultFormPaneWidth = 430;
+const minFormPaneWidth = 280;
+const maxFormPaneWidth = 1040;
+const expandedSidebarWidth = 236;
+const collapsedSidebarWidth = 76;
+const paneResizerWidth = 8;
+const minResultPaneWidth = 320;
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
 
 function getInitialTheme(): AppTheme {
   const savedTheme = window.localStorage.getItem(themeStorageKey);
@@ -77,6 +101,29 @@ function getInitialTheme(): AppTheme {
   }
 
   return 'light';
+}
+
+function getMaxFormPaneWidth(sidebarWidth = expandedSidebarWidth) {
+  if (typeof window === 'undefined') {
+    return maxFormPaneWidth;
+  }
+
+  const availableWidth = window.innerWidth - sidebarWidth - paneResizerWidth - minResultPaneWidth;
+  return Math.max(minFormPaneWidth, Math.min(maxFormPaneWidth, availableWidth));
+}
+
+function getInitialFormPaneWidth() {
+  const savedWidth = Number(window.localStorage.getItem(formPaneWidthStorageKey));
+
+  if (Number.isFinite(savedWidth) && savedWidth > 0) {
+    return clamp(savedWidth, minFormPaneWidth, getMaxFormPaneWidth());
+  }
+
+  return clamp(defaultFormPaneWidth, minFormPaneWidth, getMaxFormPaneWidth());
+}
+
+function getInitialSidebarCollapsed() {
+  return window.localStorage.getItem(sidebarCollapsedStorageKey) === 'true';
 }
 
 function getCookie(name: string) {
@@ -310,8 +357,66 @@ function html(value: string) {
     .replace(/'/g, '&#039;');
 }
 
+function InfoTooltip({
+  description,
+  onShow,
+  onHide,
+}: {
+  description: string;
+  onShow: (description: string, anchor: HTMLElement) => void;
+  onHide: () => void;
+}) {
+  const iconRef = React.useRef<HTMLSpanElement | null>(null);
+
+  function handleShow() {
+    if (iconRef.current) {
+      onShow(description, iconRef.current);
+    }
+  }
+
+  return (
+    <span
+      ref={iconRef}
+      className="field-info"
+      aria-label={description}
+      tabIndex={0}
+      onMouseEnter={handleShow}
+      onMouseLeave={onHide}
+      onFocus={handleShow}
+      onBlur={onHide}
+      onClick={(event) => event.preventDefault()}
+    >
+      ⓘ
+    </span>
+  );
+}
+
+function FieldLabel({
+  htmlFor,
+  children,
+  description,
+  onTooltipShow,
+  onTooltipHide,
+}: {
+  htmlFor: string;
+  children: React.ReactNode;
+  description: string;
+  onTooltipShow: (description: string, anchor: HTMLElement) => void;
+  onTooltipHide: () => void;
+}) {
+  return (
+    <label className="field-label" htmlFor={htmlFor}>
+      <span>{children}</span>
+      <InfoTooltip description={description} onShow={onTooltipShow} onHide={onTooltipHide} />
+    </label>
+  );
+}
+
 function App() {
   const [theme, setTheme] = React.useState<AppTheme>(getInitialTheme);
+  const [formPaneWidth, setFormPaneWidth] = React.useState(getInitialFormPaneWidth);
+  const [isResizingPane, setIsResizingPane] = React.useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = React.useState(getInitialSidebarCollapsed);
   const [requestMode, setRequestMode] = React.useState<RequestMode>('maintenance');
   const [serial, setSerial] = React.useState('');
   const [invoiceNumber, setInvoiceNumber] = React.useState('');
@@ -332,6 +437,8 @@ function App() {
   const [openingServiceOrder, setOpeningServiceOrder] = React.useState(false);
   const [serviceOrderStatus, setServiceOrderStatus] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  const [activeTooltip, setActiveTooltip] = React.useState<ActiveTooltip | null>(null);
+  const layoutRef = React.useRef<HTMLDivElement | null>(null);
 
   const extraction = response.results.length > 1
     ? { ...firstExtraction(response), serial: serialSummary(response) }
@@ -377,10 +484,197 @@ function App() {
       ? 'Digite o serial do IDFace para consultar o SPOC e retornar a IDBlock Next.'
       : 'Preencha os campos do formulário para consultar o UNO e montar a resposta.';
   const canCopyResult = requestMode !== 'invoice' && !isEmptyResult;
+  const isBusy = loading || openingServiceOrder;
+  const shouldShowInvoicePreview = requestMode === 'invoice' && Boolean(invoiceLookup?.base64Pdf && invoicePdfUrl);
+  const shouldShowExtractedGrid = !isEmptyResult && requestMode !== 'invoice';
+  const responseTone = error || response.status === 'ERRO' || response.status.includes('ERRO') || response.status === 'failed'
+    ? 'error'
+    : isReady
+      ? 'success'
+      : 'warning';
+  const responseCardTitle = responseTone === 'error'
+    ? 'Não foi possível concluir'
+    : responseTone === 'success'
+      ? statusLabel(response.status)
+      : 'Retorno da solicitação';
+  const responseCardMessage = error || response.responseBody;
+  const busyTitle = loading
+    ? requestMode === 'invoice'
+      ? 'Buscando nota fiscal'
+      : requestMode === 'idblock-next'
+        ? 'Consultando SPOC'
+        : 'Consultando UNO'
+    : 'Abrindo O.S no UNO';
+  const busyDescription = loading
+    ? requestMode === 'invoice'
+      ? 'Aguarde enquanto o aplicativo acessa o UNO e prepara a visualização do PDF.'
+      : requestMode === 'idblock-next'
+        ? 'Aguarde enquanto o aplicativo consulta o serial no SPOC.'
+        : 'Aguarde enquanto o aplicativo valida os dados e monta a resposta.'
+    : 'Aguarde enquanto a O.S é registrada no UNO.';
+  const warrantyHelpText = requestMode === 'exchange'
+    ? 'Use quando a troca precisar ser liberada manualmente: considera o equipamento em garantia mesmo se a validação automática indicar prazo vencido.'
+    : requestMode === 'parts'
+      ? 'Use quando o envio de peças precisar ser liberado manualmente: força a abertura como garantia mesmo se a validação automática indicar prazo vencido.'
+      : 'Use quando a manutenção precisar ser liberada manualmente: força a abertura como garantia mesmo se a validação automática indicar prazo vencido.';
 
   React.useEffect(() => {
     window.localStorage.setItem(themeStorageKey, theme);
   }, [theme]);
+
+  React.useEffect(() => {
+    function hideFloatingTooltip() {
+      setActiveTooltip(null);
+    }
+
+    window.addEventListener('resize', hideFloatingTooltip);
+    window.addEventListener('scroll', hideFloatingTooltip, true);
+
+    return () => {
+      window.removeEventListener('resize', hideFloatingTooltip);
+      window.removeEventListener('scroll', hideFloatingTooltip, true);
+    };
+  }, []);
+
+  function showFloatingTooltip(description: string, anchor: HTMLElement) {
+    const rect = anchor.getBoundingClientRect();
+    const maxWidth = Math.min(340, Math.max(220, window.innerWidth - 24));
+    const left = clamp(rect.left + rect.width / 2, 12 + maxWidth / 2, window.innerWidth - 12 - maxWidth / 2);
+    const shouldOpenAbove = window.innerHeight - rect.bottom < 150 && rect.top > 150;
+
+    setActiveTooltip({
+      description,
+      left,
+      top: shouldOpenAbove ? rect.top - 10 : rect.bottom + 10,
+      maxWidth,
+      placement: shouldOpenAbove ? 'top' : 'bottom',
+    });
+  }
+
+  function hideFloatingTooltip() {
+    setActiveTooltip(null);
+  }
+
+  React.useEffect(() => {
+    window.localStorage.setItem(sidebarCollapsedStorageKey, String(sidebarCollapsed));
+    setFormPaneWidth((currentWidth) => clamp(
+      currentWidth,
+      minFormPaneWidth,
+      getMaxFormPaneWidth(sidebarCollapsed ? collapsedSidebarWidth : expandedSidebarWidth),
+    ));
+  }, [sidebarCollapsed]);
+
+  React.useEffect(() => {
+    if (window.innerWidth > 1180) {
+      window.localStorage.setItem(formPaneWidthStorageKey, String(Math.round(formPaneWidth)));
+    }
+  }, [formPaneWidth]);
+
+  React.useEffect(() => {
+    function handleWindowResize() {
+      setFormPaneWidth((currentWidth) => clamp(
+        currentWidth,
+        minFormPaneWidth,
+        getMaxFormPaneWidth(sidebarCollapsed ? collapsedSidebarWidth : expandedSidebarWidth),
+      ));
+    }
+
+    window.addEventListener('resize', handleWindowResize);
+
+    return () => window.removeEventListener('resize', handleWindowResize);
+  }, [sidebarCollapsed]);
+
+  function updateFormPaneWidth(nextWidth: number) {
+    setFormPaneWidth(clamp(
+      nextWidth,
+      minFormPaneWidth,
+      getMaxFormPaneWidth(sidebarCollapsed ? collapsedSidebarWidth : expandedSidebarWidth),
+    ));
+  }
+
+  function handleModeChange(mode: RequestMode) {
+    setRequestMode(mode);
+    setResponse(emptyResponse);
+    setCopied(false);
+    setError(null);
+    setServiceOrderStatus(null);
+
+    if (mode !== 'invoice') {
+      setInvoiceLookup(null);
+    }
+
+    if (mode !== 'idblock-next') {
+      setSpocResolution(null);
+    }
+  }
+
+  function handlePaneResizeStart(event: React.PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+
+    const startX = event.clientX;
+    const startWidth = formPaneWidth;
+    let nextWidth = startWidth;
+    let animationFrame = 0;
+    setIsResizingPane(true);
+
+    function applyWidth(width: number) {
+      nextWidth = clamp(
+        width,
+        minFormPaneWidth,
+        getMaxFormPaneWidth(sidebarCollapsed ? collapsedSidebarWidth : expandedSidebarWidth),
+      );
+
+      if (animationFrame) {
+        return;
+      }
+
+      animationFrame = window.requestAnimationFrame(() => {
+        layoutRef.current?.style.setProperty('--form-pane-width', `${nextWidth}px`);
+        animationFrame = 0;
+      });
+    }
+
+    function handlePointerMove(pointerEvent: PointerEvent) {
+      applyWidth(startWidth + pointerEvent.clientX - startX);
+    }
+
+    function handlePointerUp() {
+      if (animationFrame) {
+        window.cancelAnimationFrame(animationFrame);
+      }
+
+      layoutRef.current?.style.setProperty('--form-pane-width', `${nextWidth}px`);
+      setFormPaneWidth(nextWidth);
+      setIsResizingPane(false);
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    }
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+  }
+
+  function handlePaneResizeKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      updateFormPaneWidth(formPaneWidth - 24);
+    }
+
+    if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      updateFormPaneWidth(formPaneWidth + 24);
+    }
+
+    if (event.key === 'Home') {
+      event.preventDefault();
+      updateFormPaneWidth(minFormPaneWidth);
+    }
+
+    if (event.key === 'End') {
+      event.preventDefault();
+      updateFormPaneWidth(getMaxFormPaneWidth(sidebarCollapsed ? collapsedSidebarWidth : expandedSidebarWidth));
+    }
+  }
 
   async function handleGenerate() {
     setLoading(true);
@@ -647,6 +941,11 @@ function App() {
     setSettingsSaved(false);
   }
 
+  const layoutStyle = {
+    '--form-pane-width': `${formPaneWidth}px`,
+    '--sidebar-width': `${sidebarCollapsed ? collapsedSidebarWidth : expandedSidebarWidth}px`,
+  } as React.CSSProperties;
+
   return (
     <main className="app-shell" data-theme={theme}>
       <section className="workspace" aria-label="iDSupport">
@@ -668,16 +967,36 @@ function App() {
           </div>
         </header>
 
-        <div className="chat-layout">
-          <aside className={showSettings ? 'sidebar settings-open' : 'sidebar'} aria-label="Navegacao do assistente">
+        <div ref={layoutRef} className={isResizingPane ? 'chat-layout resizing-pane' : 'chat-layout'} style={layoutStyle}>
+          <aside
+            className={[
+              'sidebar',
+              showSettings && !sidebarCollapsed ? 'settings-open' : '',
+              sidebarCollapsed ? 'collapsed' : '',
+            ].filter(Boolean).join(' ')}
+            aria-label="Navegacao do assistente"
+          >
             <div className="brand-panel">
               <img className="brand-logo" src={idSupportLogo} alt="iDSupport" />
+              <img className="brand-icon" src={idIcon} alt="" aria-hidden="true" />
+              <button
+                className="sidebar-toggle"
+                type="button"
+                onClick={() => {
+                  setSidebarCollapsed((value) => !value);
+                  setShowSettings(false);
+                }}
+                title={sidebarCollapsed ? 'Expandir menu' : 'Recolher menu'}
+                aria-label={sidebarCollapsed ? 'Expandir menu' : 'Recolher menu'}
+              >
+                {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+              </button>
             </div>
             <div className="mode-switch" role="tablist" aria-label="Tipo de solicitacao">
               <button
                 className={requestMode === 'maintenance' ? 'mode-button active' : 'mode-button'}
                 type="button"
-                onClick={() => setRequestMode('maintenance')}
+                onClick={() => handleModeChange('maintenance')}
                 role="tab"
                 aria-selected={requestMode === 'maintenance'}
                 title="Manutenção"
@@ -688,7 +1007,7 @@ function App() {
               <button
                 className={requestMode === 'parts' ? 'mode-button active' : 'mode-button'}
                 type="button"
-                onClick={() => setRequestMode('parts')}
+                onClick={() => handleModeChange('parts')}
                 role="tab"
                 aria-selected={requestMode === 'parts'}
                 title="Envio de pecas"
@@ -699,7 +1018,7 @@ function App() {
               <button
                 className={requestMode === 'exchange' ? 'mode-button active' : 'mode-button'}
                 type="button"
-                onClick={() => setRequestMode('exchange')}
+                onClick={() => handleModeChange('exchange')}
                 role="tab"
                 aria-selected={requestMode === 'exchange'}
                 title="Troca"
@@ -710,13 +1029,7 @@ function App() {
               <button
                 className={requestMode === 'invoice' ? 'mode-button active' : 'mode-button'}
                 type="button"
-                onClick={() => {
-                  setRequestMode('invoice');
-                  setInvoiceLookup(null);
-                  setResponse(emptyResponse);
-                  setServiceOrderStatus(null);
-                  setError(null);
-                }}
+                onClick={() => handleModeChange('invoice')}
                 role="tab"
                 aria-selected={requestMode === 'invoice'}
                 title="Buscar NF"
@@ -727,13 +1040,7 @@ function App() {
               <button
                 className={requestMode === 'idblock-next' ? 'mode-button active' : 'mode-button'}
                 type="button"
-                onClick={() => {
-                  setRequestMode('idblock-next');
-                  setSpocResolution(null);
-                  setResponse(emptyResponse);
-                  setServiceOrderStatus(null);
-                  setError(null);
-                }}
+                onClick={() => handleModeChange('idblock-next')}
                 role="tab"
                 aria-selected={requestMode === 'idblock-next'}
                 title="IDBlock Next"
@@ -778,7 +1085,20 @@ function App() {
                 </div>
               </section>
             ) : null}
-            <button className="settings-button" type="button" onClick={() => setShowSettings((value) => !value)} title="Configuracoes">
+            <button
+              className="settings-button"
+              type="button"
+              onClick={() => {
+                if (sidebarCollapsed) {
+                  setSidebarCollapsed(false);
+                  setShowSettings(true);
+                  return;
+                }
+
+                setShowSettings((value) => !value);
+              }}
+              title="Configuracoes"
+            >
               <Settings size={18} />
               <span>Configuracoes</span>
             </button>
@@ -798,7 +1118,7 @@ function App() {
                       id="invoice-number-input"
                       value={invoiceNumber}
                       onChange={(event) => setInvoiceNumber(event.target.value)}
-                      placeholder="Informe o número da NF"
+                      placeholder="Digite o número da NF"
                       inputMode="numeric"
                       spellCheck="false"
                       aria-label="Informe o número da nota fiscal"
@@ -807,26 +1127,42 @@ function App() {
                 ) : null}
                 {requestMode === 'idblock-next' || requestMode === 'invoice' ? null : (
                   <>
-                    <label htmlFor="cnpj-input">CNPJ da revenda</label>
+                    <FieldLabel
+                      htmlFor="cnpj-input"
+                      description="Insira o CNPJ da revenda que deseja abrir a RMA na ERP"
+                      onTooltipShow={showFloatingTooltip}
+                      onTooltipHide={hideFloatingTooltip}
+                    >
+                      CNPJ da revenda
+                    </FieldLabel>
                     <input
                       id="cnpj-input"
                       value={cnpj}
                       onChange={(event) => setCnpj(event.target.value)}
-                      placeholder="11222333000181"
+                      placeholder="Digite o CNPJ da revenda"
                       spellCheck="false"
                       aria-label="Informe o CNPJ da revenda"
                     />
                   </>
                 )}
                 {requestMode === 'invoice' ? null : (
-                  <label htmlFor="serial-input">{requestMode === 'idblock-next' ? 'Serial do IDFace' : 'Número de série dos equipamentos'}</label>
+                  <FieldLabel
+                    htmlFor="serial-input"
+                    description={requestMode === 'idblock-next'
+                      ? 'Insira o serial do IDFace pertencente a catraca IDBlock Next'
+                      : 'Insira o número de série dos equipamentos, caso tenha mais de um serial separado em linhas diferentes é gerado uma OS para cada, porém com a mesma descrição.'}
+                    onTooltipShow={showFloatingTooltip}
+                    onTooltipHide={hideFloatingTooltip}
+                  >
+                    {requestMode === 'idblock-next' ? 'Serial do IDFace' : 'Número de série dos equipamentos'}
+                  </FieldLabel>
                 )}
                 {requestMode === 'invoice' ? null : requestMode === 'idblock-next' ? (
                   <input
                     id="serial-input"
                     value={serial}
                     onChange={(event) => setSerial(event.target.value)}
-                    placeholder="0A0000/000000"
+                    placeholder="Digite o serial do IDFace"
                     spellCheck="false"
                     aria-label="Informe o numero de serie do IDFace"
                   />
@@ -835,30 +1171,44 @@ function App() {
                     id="serial-input"
                     value={serial}
                     onChange={(event) => setSerial(event.target.value)}
-                    placeholder={`0A0000/000000\n0B0000/000001`}
+                    placeholder="Digite um número de série por linha"
                     spellCheck="false"
                     aria-label="Informe um ou mais numeros de serie"
                   />
                 )}
                 {requestMode !== 'idblock-next' && requestMode !== 'invoice' ? (
                   <>
-                    <label htmlFor="service-order-defect">Defeito relatado</label>
+                    <FieldLabel
+                      htmlFor="service-order-defect"
+                      description="Insira o defeito relatado pelo revendedor/instalador"
+                      onTooltipShow={showFloatingTooltip}
+                      onTooltipHide={hideFloatingTooltip}
+                    >
+                      Defeito relatado
+                    </FieldLabel>
                     <textarea
                       id="service-order-defect"
                       value={serviceOrderDefect}
                       onChange={(event) => setServiceOrderDefect(event.target.value)}
-                      placeholder="Descreva o defeito informado pelo cliente"
+                      placeholder="Digite o defeito informado pelo cliente"
                       spellCheck="false"
                       aria-label="Informe o defeito relatado"
                     />
                     {requestMode === 'maintenance' || requestMode === 'exchange' ? (
                       <>
-                        <label htmlFor="uno-observations">Observações</label>
+                        <FieldLabel
+                          htmlFor="uno-observations"
+                          description="Insira uma observação para a abertura da O.S (caso haja)"
+                          onTooltipShow={showFloatingTooltip}
+                          onTooltipHide={hideFloatingTooltip}
+                        >
+                          Observações
+                        </FieldLabel>
                         <textarea
                           id="uno-observations"
                           value={unoObservations}
                           onChange={(event) => setUnoObservations(event.target.value)}
-                          placeholder="Observações para a O.S"
+                          placeholder="Digite observações para a O.S"
                           spellCheck="false"
                           aria-label="Informe observações para a O.S"
                         />
@@ -872,17 +1222,25 @@ function App() {
                         onChange={(event) => setMaintenanceInWarranty(event.target.checked)}
                       />
                       <span>{requestMode === 'parts' ? 'Envio de pecas' : requestMode === 'exchange' ? 'Troca' : 'Manutenção'} em garantia liberada manualmente</span>
+                      <InfoTooltip description={warrantyHelpText} onShow={showFloatingTooltip} onHide={hideFloatingTooltip} />
                     </label>
                   </>
                 ) : null}
                 {requestMode === 'parts' ? (
                   <>
-                    <label htmlFor="part-input">Peca a ser enviada</label>
+                    <FieldLabel
+                      htmlFor="part-input"
+                      description="Insira o código da peça a ser enviada"
+                      onTooltipShow={showFloatingTooltip}
+                      onTooltipHide={hideFloatingTooltip}
+                    >
+                      Peca a ser enviada
+                    </FieldLabel>
                     <input
                       id="part-input"
                       value={partToSend}
                       onChange={(event) => setPartToSend(event.target.value)}
-                      placeholder="Informe a peca"
+                      placeholder="Digite a peça"
                       spellCheck="false"
                       aria-label="Informe a peca a ser enviada"
                     />
@@ -914,13 +1272,39 @@ function App() {
             </div>
           </section>
 
+          <div
+            className="pane-resizer"
+            role="separator"
+            aria-label="Ajustar largura entre formulario e resultado"
+            aria-orientation="vertical"
+            aria-valuemin={minFormPaneWidth}
+            aria-valuemax={getMaxFormPaneWidth(sidebarCollapsed ? collapsedSidebarWidth : expandedSidebarWidth)}
+            aria-valuenow={Math.round(formPaneWidth)}
+            tabIndex={0}
+            onPointerDown={handlePaneResizeStart}
+            onKeyDown={handlePaneResizeKeyDown}
+            onDoubleClick={() => updateFormPaneWidth(defaultFormPaneWidth)}
+            title="Arraste para ajustar. Duplo clique para restaurar."
+          >
+            <span />
+          </div>
+
           <section className="result" aria-label={resultAriaLabel}>
             <div className="message outgoing result-card">
               <div className="message-header">
                 {requestMode === 'invoice' ? <FileText size={18} /> : requestMode === 'idblock-next' ? <Search size={18} /> : <Clipboard size={18} />}
                 <span>{resultTitle}</span>
               </div>
-              {!isEmptyResult ? (
+              {isBusy ? (
+                <div className="panel-loading-state" role="status" aria-live="polite">
+                  <div className="panel-loading-icon">
+                    <RefreshCw size={28} />
+                  </div>
+                  <strong>{busyTitle}</strong>
+                  <span>{busyDescription}</span>
+                </div>
+              ) : null}
+              {!isBusy && shouldShowExtractedGrid ? (
                 <div className="extracted-grid">
                   <div>
                     <span>{requestMode === 'invoice' ? 'Nota fiscal' : requestMode === 'idblock-next' ? 'Serial consultado' : 'Série'}</span>
@@ -936,13 +1320,13 @@ function App() {
                   </div>
                 </div>
               ) : null}
-              {requestMode === 'idblock-next' && spocResolution?.nextSerial ? (
+              {!isBusy && requestMode === 'idblock-next' && spocResolution?.nextSerial ? (
                 <div className="next-serial-box">
                   <span>Serial da IDBlock Next encontrado no SPOC</span>
                   <strong>{spocResolution.nextSerial}</strong>
                 </div>
               ) : null}
-              {requestMode === 'invoice' && invoiceLookup?.base64Pdf && invoicePdfUrl ? (
+              {!isBusy && shouldShowInvoicePreview ? (
                 <div className="invoice-preview">
                   <iframe title="Visualizacao da nota fiscal" src={invoicePdfUrl} />
                   <a
@@ -955,10 +1339,11 @@ function App() {
                   </a>
                 </div>
               ) : null}
-              {error ? <div className="error-box">{error}</div> : null}
-              {response.isHtml ? (
-                <div className="html-preview" dangerouslySetInnerHTML={{ __html: response.responseBody }} />
-              ) : isEmptyResult ? (
+              {!isBusy && response.isHtml ? (
+                <div className="html-preview">
+                  <div className="email-preview-surface" dangerouslySetInnerHTML={{ __html: response.responseBody }} />
+                </div>
+              ) : !isBusy && isEmptyResult ? (
                 <div className="empty-state">
                   <div className="empty-state-icon">
                     {requestMode === 'invoice' ? <FileText size={28} /> : requestMode === 'idblock-next' ? <Search size={28} /> : <Clipboard size={28} />}
@@ -966,10 +1351,18 @@ function App() {
                   <strong>{emptyStateTitle}</strong>
                   <span>{emptyStateDescription}</span>
                 </div>
-              ) : (
-                <pre>{response.responseBody}</pre>
+              ) : isBusy || shouldShowInvoicePreview ? null : (
+                <div className={`response-card response-${responseTone}`}>
+                  <div className="response-card-icon">
+                    {responseTone === 'success' ? <CheckCircle2 size={22} /> : <ShieldAlert size={22} />}
+                  </div>
+                  <div>
+                    <strong>{responseCardTitle}</strong>
+                    <p>{responseCardMessage}</p>
+                  </div>
+                </div>
               )}
-              {canOpenServiceOrder ? (
+              {!isBusy && canOpenServiceOrder ? (
                 <div className="service-order-prompt">
                   <span>{requestMode === 'exchange' ? 'Deseja abrir a O.S de troca no UNO?' : 'Deseja abrir a O.S de manutenção no UNO?'}</span>
                   <button type="button" onClick={requestMode === 'exchange' ? handleOpenExchangeServiceOrder : handleOpenServiceOrder} disabled={openingServiceOrder}>
@@ -979,7 +1372,7 @@ function App() {
                   {serviceOrderStatus ? <p>{serviceOrderStatus}</p> : null}
                 </div>
               ) : null}
-              {canCopyResult ? (
+              {!isBusy && canCopyResult ? (
                 <button className="copy-button" type="button" onClick={handleCopy} title={requestMode === 'idblock-next' ? 'Copiar serial' : 'Copiar resposta'}>
                   <Clipboard size={18} />
                   <span>{copied ? 'Copiado' : requestMode === 'idblock-next' ? 'Copiar serial' : 'Copiar resposta'}</span>
@@ -989,6 +1382,20 @@ function App() {
           </section>
         </div>
       </section>
+      {activeTooltip ? createPortal(
+        <div
+          className={`floating-field-tooltip floating-field-tooltip-${activeTooltip.placement}${theme === 'dark' ? ' dark' : ''}`}
+          role="tooltip"
+          style={{
+            left: activeTooltip.left,
+            top: activeTooltip.top,
+            maxWidth: activeTooltip.maxWidth,
+          }}
+        >
+          {activeTooltip.description}
+        </div>,
+        document.body,
+      ) : null}
     </main>
   );
 }
