@@ -691,6 +691,7 @@ pre::-webkit-scrollbar-thumb:hover,
 }
 
 .serial-panel input,
+.serial-panel select,
 .serial-panel textarea {
   width: 100%;
   border: 1px solid #d5dde8;
@@ -704,7 +705,8 @@ pre::-webkit-scrollbar-thumb:hover,
   transition: border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
 }
 
-.serial-panel input {
+.serial-panel input,
+.serial-panel select {
   min-height: 46px;
 }
 
@@ -715,6 +717,7 @@ pre::-webkit-scrollbar-thumb:hover,
 }
 
 .serial-panel input:focus,
+.serial-panel select:focus,
 .serial-panel textarea:focus {
   border-color: #d71920;
   background: #ffffff;
@@ -738,6 +741,18 @@ pre::-webkit-scrollbar-thumb:hover,
   font-size: 0.86rem;
   font-weight: 800;
   transition: color 0.16s ease;
+}
+
+.occurrence-select-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.occurrence-select-grid > div {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
 }
 
 .serial-panel .checkbox-row:hover {
@@ -801,6 +816,112 @@ pre::-webkit-scrollbar-thumb:hover,
   line-height: 1.25;
 }
 
+.occurrence-drafts {
+  display: grid;
+  gap: 10px;
+  margin-top: 2px;
+  padding: 12px;
+  border: 1px solid #d8e0eb;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.occurrence-drafts-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.occurrence-drafts-header span {
+  color: #1f2937;
+  font-size: 0.88rem;
+  font-weight: 900;
+}
+
+.occurrence-drafts-header small {
+  color: #667085;
+  font-size: 0.72rem;
+  font-weight: 750;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.occurrence-drafts p {
+  margin: 0;
+  color: #667085;
+  font-size: 0.82rem;
+  font-weight: 650;
+}
+
+.occurrence-drafts .occurrence-login-warning {
+  padding: 9px 10px;
+  border: 1px solid #fed7aa;
+  border-radius: 9px;
+  background: #fff7ed;
+  color: #9a3412;
+  font-size: 0.78rem;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.occurrence-draft-list {
+  display: grid;
+  gap: 8px;
+}
+
+.occurrence-draft {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.occurrence-draft > button:first-child {
+  min-height: 48px;
+  justify-content: flex-start;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 2px;
+  border-color: #d8e0eb;
+  background: #f8fafc;
+  color: #1f2937;
+  text-align: left;
+}
+
+.occurrence-draft.active > button:first-child {
+  border-color: #f1b8bc;
+  background: #fff5f5;
+}
+
+.occurrence-draft strong,
+.occurrence-draft span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.occurrence-draft span {
+  color: #667085;
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+
+.draft-delete-button {
+  min-height: 48px;
+  border-color: #d8e0eb;
+  background: #ffffff;
+  color: #667085;
+  font-size: 0.78rem;
+}
+
+.draft-delete-button:hover {
+  color: #b9151c;
+  background: #fff5f5;
+  border-color: #f1b8bc;
+}
+
 .actions {
   display: grid;
   grid-template-columns: 0.8fr 1.2fr;
@@ -808,7 +929,15 @@ pre::-webkit-scrollbar-thumb:hover,
   padding: 10px 18px 12px;
 }
 
+.occurrence-actions {
+  grid-template-columns: 0.75fr 1fr 1.25fr;
+}
+
 @container (max-width: 360px) {
+  .occurrence-select-grid {
+    grid-template-columns: 1fr;
+  }
+
   .serial-panel .checkbox-row {
     align-items: start;
     gap: 8px;
@@ -925,6 +1054,58 @@ button:disabled {
   margin: 4px 0;
   color: #101828;
   font-size: 1.02rem;
+  overflow-wrap: anywhere;
+}
+
+.occurrence-result {
+  margin: 14px 16px 0;
+  padding: 14px;
+  border: 1px solid #a7d9b8;
+  border-radius: 12px;
+  background: #f3fbf6;
+  color: #166534;
+}
+
+.occurrence-result > span {
+  display: block;
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
+.occurrence-result > strong {
+  display: block;
+  margin-top: 4px;
+  color: #101828;
+  font-size: 1.04rem;
+  overflow-wrap: anywhere;
+}
+
+.occurrence-result dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 12px 0 0;
+}
+
+.occurrence-result div {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #cdeed8;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.occurrence-result dt {
+  color: #64748b;
+  font-size: 0.72rem;
+  font-weight: 850;
+}
+
+.occurrence-result dd {
+  margin: 4px 0 0;
+  color: #101828;
+  font-size: 0.88rem;
+  font-weight: 850;
   overflow-wrap: anywhere;
 }
 
@@ -1342,6 +1523,7 @@ pre {
 }
 
 .app-shell[data-theme="dark"] .serial-panel input,
+.app-shell[data-theme="dark"] .serial-panel select,
 .app-shell[data-theme="dark"] .serial-panel textarea {
   border-color: #293548 !important;
   color: #f8fafc !important;
@@ -1360,6 +1542,7 @@ pre {
 }
 
 .app-shell[data-theme="dark"] .serial-panel input:focus,
+.app-shell[data-theme="dark"] .serial-panel select:focus,
 .app-shell[data-theme="dark"] .serial-panel textarea:focus {
   border-color: #d71920 !important;
   background: #101827 !important;
@@ -1525,6 +1708,26 @@ pre {
 
 .app-shell[data-theme="dark"] .service-order-prompt p {
   color: #dbe3ee;
+}
+
+.app-shell[data-theme="dark"] .occurrence-drafts {
+  border-color: #293548;
+  background: #101827;
+}
+
+.app-shell[data-theme="dark"] .occurrence-drafts-header span {
+  color: #f8fafc;
+}
+
+.app-shell[data-theme="dark"] .occurrence-drafts-header small,
+.app-shell[data-theme="dark"] .occurrence-drafts p {
+  color: #94a3b8;
+}
+
+.app-shell[data-theme="dark"] .occurrence-drafts .occurrence-login-warning {
+  border-color: #7c2d12;
+  background: #24150d;
+  color: #fdba74;
 }
 
 @media (max-width: 1180px) {
