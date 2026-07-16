@@ -196,11 +196,11 @@ public sealed class UnoOccurrenceService : IUnoOccurrenceService
     {
         await page.GotoAsync(AbsoluteUrl("ocw0001.do?method=prepTela"), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
 
-        await FillByNameAsync(page, "codCliente", customer.Code);
-        await SubmitCurrentFormAsync(page, "ocw0001.do?method=buscarCliente");
+        await FillByNameAsync(page, "codCliente", customer.Code, dispatchChange: false);
+        await SubmitCurrentFormAsync(page, "ocw0001.do?method=buscarCliente", preferredFieldName: "codCliente");
 
-        await FillByNameAsync(page, "codCategoria", categoryCode.ToString(CultureInfo.InvariantCulture));
-        await SubmitCurrentFormAsync(page, "ocw0001.do?method=buscarCategoria");
+        await FillByNameAsync(page, "codCategoria", categoryCode.ToString(CultureInfo.InvariantCulture), dispatchChange: false);
+        await SubmitCurrentFormAsync(page, "ocw0001.do?method=buscarCategoria", preferredFieldName: "codCategoria");
 
         await FillOccurrenceFieldsAsync(page, request, customer.Code, categoryCode, occurrenceTypeCode, statusCode, costCenterCode);
 
@@ -231,8 +231,8 @@ public sealed class UnoOccurrenceService : IUnoOccurrenceService
         int statusCode,
         int costCenterCode)
     {
-        await FillByNameAsync(page, "codCliente", customerCode);
-        await FillByNameAsync(page, "codCategoria", categoryCode.ToString(CultureInfo.InvariantCulture));
+        await FillByNameAsync(page, "codCliente", customerCode, dispatchChange: false);
+        await FillByNameAsync(page, "codCategoria", categoryCode.ToString(CultureInfo.InvariantCulture), dispatchChange: false);
         await FillByNameAsync(page, "descAbrev", request.Title.Trim());
         await FillByNameAsync(page, "descricao", request.Description.Trim());
         await SelectByNameAsync(page, "tpOcorrencia", occurrenceTypeCode.ToString(CultureInfo.InvariantCulture));
@@ -308,7 +308,7 @@ public sealed class UnoOccurrenceService : IUnoOccurrenceService
             : null;
     }
 
-    private async Task FillByNameAsync(IPage page, string name, string value)
+    private async Task FillByNameAsync(IPage page, string name, string value, bool dispatchChange = true)
     {
         var locator = FindEditableField(page, name);
         if (locator is null)
@@ -318,8 +318,13 @@ public sealed class UnoOccurrenceService : IUnoOccurrenceService
         }
 
         await locator.EvaluateAsync(
-            "(element, fieldValue) => { element.value = fieldValue; element.dispatchEvent(new Event('change', { bubbles: true })); }",
-            value);
+            @"(element, payload) => {
+                element.value = payload.value;
+                if (payload.dispatchChange) {
+                    element.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            }",
+            new { value, dispatchChange });
     }
 
     private static async Task SelectByNameAsync(IPage page, string name, string value)
