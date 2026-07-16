@@ -84,6 +84,7 @@ builder.Services.AddSingleton<IUnoServiceOrderService>(serviceProvider =>
         serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<UnoErpOptions>>(),
         serviceProvider.GetRequiredService<ILogger<UnoServiceOrderService>>()));
 builder.Services.AddSingleton<IUnoInvoiceLookupService, UnoInvoiceLookupService>();
+builder.Services.AddSingleton<IUnoOccurrenceService, UnoOccurrenceService>();
 
 var app = builder.Build();
 
@@ -152,6 +153,33 @@ app.MapPost("/api/rma/invoice/find", async (
                 null,
                 null,
                 null),
+            statusCode: StatusCodes.Status500InternalServerError);
+    }
+});
+
+app.MapPost("/api/rma/occurrence/open", async (
+    OccurrenceOpenRequestDto request,
+    IUnoOccurrenceService occurrenceService,
+    ILogger<Program> logger,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var response = await occurrenceService.OpenAsync(request, cancellationToken);
+        return Results.Ok(response);
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Falha inesperada ao abrir O.C no UNO.");
+        return Results.Json(
+            new OccurrenceOpenResponseDto(
+                "failed",
+                $"Falha ao abrir O.C no UNO: {ex.Message}",
+                null,
+                null,
+                null,
+                request.CategoryCode,
+                request.Title),
             statusCode: StatusCodes.Status500InternalServerError);
     }
 });

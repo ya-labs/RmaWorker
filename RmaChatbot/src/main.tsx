@@ -56,7 +56,31 @@ type InvoiceLookupResponse = {
   base64Pdf?: string | null;
 };
 
-type RequestMode = 'maintenance' | 'parts' | 'exchange' | 'idblock-next' | 'invoice';
+type OccurrenceOpenResponse = {
+  status: string;
+  message: string;
+  occurrenceCode?: string | null;
+  customerCode?: string | null;
+  customerName?: string | null;
+  categoryCode?: string | null;
+  title?: string | null;
+};
+
+type OccurrenceDraft = {
+  id: string;
+  title: string;
+  description: string;
+  categoryCode: string;
+  occurrenceTypeCode: string;
+  statusCode: string;
+  costCenterCode: string;
+  cnpj: string;
+  status: 'RASCUNHO' | 'ABERTA_NO_UNO' | 'ERRO_AO_ABRIR';
+  occurrenceCode?: string | null;
+  updatedAt: string;
+};
+
+type RequestMode = 'maintenance' | 'parts' | 'exchange' | 'occurrence' | 'idblock-next' | 'invoice';
 type AppTheme = 'light' | 'dark';
 type TooltipPlacement = 'top' | 'bottom';
 
@@ -81,6 +105,10 @@ const unoPasswordCookieName = 'rmaworker_uno_password';
 const themeStorageKey = 'idsupport_theme';
 const formPaneWidthStorageKey = 'idsupport_form_pane_width';
 const sidebarCollapsedStorageKey = 'idsupport_sidebar_collapsed';
+const occurrenceDraftsStoragePrefix = 'idsupport_occurrence_drafts';
+const defaultOccurrenceTypeCode = '1';
+const defaultOccurrenceStatusCode = '50';
+const defaultOccurrenceCostCenterCode = '14';
 const defaultFormPaneWidth = 430;
 const minFormPaneWidth = 280;
 const maxFormPaneWidth = 1040;
@@ -88,6 +116,77 @@ const expandedSidebarWidth = 236;
 const collapsedSidebarWidth = 76;
 const paneResizerWidth = 8;
 const minResultPaneWidth = 320;
+const occurrenceCategoryOptions = [
+  { code: '12', name: 'Catraca' },
+  { code: '40', name: 'Catraca Facial' },
+  { code: '48', name: 'Catraca Next' },
+  { code: '41', name: 'Genetec' },
+  { code: '13', name: 'iDAccess Nano ou Pro' },
+  { code: '14', name: 'iDAccess ou iDFit' },
+  { code: '15', name: 'iDBio' },
+  { code: '18', name: 'iDBox' },
+  { code: '46', name: 'iDConnect' },
+  { code: '37', name: 'iDFace' },
+  { code: '52', name: 'iDFace MAX' },
+  { code: '11', name: 'iDFlex' },
+  { code: '19', name: 'iDLock' },
+  { code: '42', name: 'iDPower' },
+  { code: '20', name: 'iDProx' },
+  { code: '38', name: 'iDProx USB' },
+  { code: '17', name: 'iDTouch' },
+  { code: '32', name: 'iDUHF' },
+  { code: '16', name: 'Outros' },
+  { code: '8', name: 'iDSecure' },
+  { code: '45', name: 'iDSecure Cloud' },
+];
+const occurrenceTypeOptions = [
+  { code: '1', name: 'Dúvida de utilização' },
+  { code: '2', name: 'RMA e envio de peça' },
+  { code: '3', name: 'Problemas de produto' },
+  { code: '4', name: 'Licença' },
+  { code: '5', name: 'Outros' },
+  { code: '6', name: 'Visita manutenção' },
+  { code: '7', name: 'Visita treinamento' },
+  { code: '8', name: 'Instalação' },
+  { code: '9', name: 'Exportação' },
+  { code: '10', name: 'Treinamento Remoto' },
+];
+const occurrenceStatusOptions = [
+  { code: '10', name: 'Aberto' },
+  { code: '20', name: 'Engenharia' },
+  { code: '50', name: 'Resolvido' },
+  { code: '70', name: 'Pendente cliente' },
+  { code: '90', name: '-' },
+];
+const occurrenceCostCenterOptions = [
+  { code: '208', name: 'Comex - ENRUPI' },
+  { code: '2023', name: 'Comex - HUAYU' },
+  { code: '10', name: 'Filial' },
+  { code: '11', name: 'Agenciamento Automação' },
+  { code: '12', name: 'Mensalistas - Final' },
+  { code: '13', name: 'Mensalistas - Revenda - RHID' },
+  { code: '14', name: 'Suporte - Acesso' },
+  { code: '15', name: 'Suporte - Ponto e Automacao' },
+  { code: '16', name: 'Suporte Ponto - Final' },
+  { code: '17', name: 'Redução Plano - Covid 19' },
+  { code: '18', name: 'Representante - Fechadura' },
+  { code: '19', name: 'Onboarding' },
+  { code: '2', name: 'Revendas' },
+  { code: '20', name: 'Exportação Assa Abloy' },
+  { code: '21', name: 'Suporte Acesso - Final' },
+  { code: '22', name: 'Suporte Projetos - Final' },
+  { code: '23', name: 'Mensalistas - Revenda - iDSecure Cloud' },
+  { code: '24', name: 'Multa cancelamento de contrato' },
+  { code: '25', name: 'Variação cambial' },
+  { code: '26', name: 'Assistência técnica SP Revendas' },
+  { code: '27', name: 'YALE' },
+  { code: '4', name: 'Cliente Final' },
+  { code: '5', name: 'Venda Direta Revenda' },
+  { code: '6', name: 'Revenda Manutenção' },
+  { code: '7', name: 'Exportação' },
+  { code: '8', name: 'Acesso' },
+  { code: '9', name: 'Automação Comercial' },
+];
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
@@ -163,6 +262,9 @@ function statusLabel(status: string) {
     SPOC_ERRO: 'Erro no SPOC',
     NF_ENCONTRADA: 'NF encontrada',
     NF_NAO_ENCONTRADA: 'NF nao encontrada',
+    OC_RASCUNHO: 'Rascunho salvo',
+    OC_ABERTA: 'O.C aberta',
+    OC_ERRO: 'Erro na O.C',
     TECNICO_INVALIDO: 'Tecnico invalido',
     PENDENTE: 'Pendente',
     ERRO: 'Erro',
@@ -391,6 +493,35 @@ function InfoTooltip({
   );
 }
 
+function occurrenceDraftsStorageKey(login: string) {
+  const owner = login.trim().toLowerCase() || 'local';
+  return `${occurrenceDraftsStoragePrefix}_${owner}`;
+}
+
+function loadOccurrenceDrafts(login: string): OccurrenceDraft[] {
+  try {
+    const raw = window.localStorage.getItem(occurrenceDraftsStorageKey(login));
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveOccurrenceDrafts(login: string, drafts: OccurrenceDraft[]) {
+  window.localStorage.setItem(occurrenceDraftsStorageKey(login), JSON.stringify(drafts));
+}
+
+function createDraftId() {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 function FieldLabel({
   htmlFor,
   children,
@@ -429,6 +560,15 @@ function App() {
   const [maintenanceInWarranty, setMaintenanceInWarranty] = React.useState(false);
   const [partToSend, setPartToSend] = React.useState('');
   const [unoObservations, setUnoObservations] = React.useState('');
+  const [occurrenceTitle, setOccurrenceTitle] = React.useState('');
+  const [occurrenceDescription, setOccurrenceDescription] = React.useState('');
+  const [occurrenceCategoryCode, setOccurrenceCategoryCode] = React.useState('');
+  const [occurrenceTypeCode, setOccurrenceTypeCode] = React.useState(defaultOccurrenceTypeCode);
+  const [occurrenceStatusCode, setOccurrenceStatusCode] = React.useState(defaultOccurrenceStatusCode);
+  const [occurrenceCostCenterCode, setOccurrenceCostCenterCode] = React.useState(defaultOccurrenceCostCenterCode);
+  const [occurrenceDrafts, setOccurrenceDrafts] = React.useState<OccurrenceDraft[]>(() => loadOccurrenceDrafts(decodeURIComponent(getCookie(unoLoginCookieName))));
+  const [selectedOccurrenceDraftId, setSelectedOccurrenceDraftId] = React.useState<string | null>(null);
+  const [lastOccurrence, setLastOccurrence] = React.useState<OccurrenceOpenResponse | null>(null);
   const [spocResolution, setSpocResolution] = React.useState<SpocIdBlockNextResponse | null>(null);
   const [invoiceLookup, setInvoiceLookup] = React.useState<InvoiceLookupResponse | null>(null);
   const [response, setResponse] = React.useState<ApiResponse>(emptyResponse);
@@ -443,11 +583,15 @@ function App() {
   const extraction = response.results.length > 1
     ? { ...firstExtraction(response), serial: serialSummary(response) }
     : firstExtraction(response);
+  const isServiceOrderMode = requestMode === 'maintenance' || requestMode === 'parts' || requestMode === 'exchange';
   const isReady = response.status === 'APTO'
     || response.status === 'OS_ABERTA'
     || response.status === 'SPOC_SERIAL_ENCONTRADO'
-    || response.status === 'NF_ENCONTRADA';
+    || response.status === 'NF_ENCONTRADA'
+    || response.status === 'OC_ABERTA'
+    || response.status === 'OC_RASCUNHO';
   const serials = splitSerials(serial);
+  const hasOccurrenceCredentials = unoLogin.trim().length > 0 && unoPassword.length > 0;
   const invoicePdfUrl = invoiceLookup?.base64Pdf
     ? `data:${invoiceLookup.contentType || 'application/pdf'};base64,${invoiceLookup.base64Pdf}`
     : '';
@@ -455,38 +599,54 @@ function App() {
     ? invoiceNumber.trim().length > 0
     : requestMode === 'idblock-next'
       ? serial.trim().length > 0
-      : serials.length > 0
-      && cnpj.trim().length > 0
-      && serviceOrderDefect.trim().length > 0
-      && (requestMode === 'maintenance' || requestMode === 'exchange' || partToSend.trim().length > 0);
+      : requestMode === 'occurrence'
+        ? occurrenceTitle.trim().length > 0
+          && occurrenceDescription.trim().length > 0
+          && occurrenceCategoryCode.trim().length > 0
+          && hasOccurrenceCredentials
+        : serials.length > 0
+          && cnpj.trim().length > 0
+          && serviceOrderDefect.trim().length > 0
+          && (requestMode === 'maintenance' || requestMode === 'exchange' || partToSend.trim().length > 0);
+  const canSaveOccurrenceDraft = requestMode === 'occurrence'
+    && [occurrenceTitle, occurrenceDescription, occurrenceCategoryCode, occurrenceTypeCode, occurrenceStatusCode, occurrenceCostCenterCode, cnpj]
+      .some((value) => value.trim().length > 0);
   const eligibleResults = response.results.filter((result) => result.status === 'APTO' && result.extraction.serial);
   const canOpenServiceOrder = (requestMode === 'maintenance' || requestMode === 'exchange')
     && eligibleResults.length > 0;
   const resultTitle = requestMode === 'invoice'
     ? 'Nota fiscal'
+    : requestMode === 'occurrence'
+      ? 'Ocorrência'
     : requestMode === 'idblock-next'
       ? 'Consulta SPOC'
       : 'Resposta sugerida';
   const resultAriaLabel = requestMode === 'invoice'
     ? 'Resultado da busca de nota fiscal'
+    : requestMode === 'occurrence'
+      ? 'Resultado da ocorrência'
     : requestMode === 'idblock-next'
       ? 'Resultado da consulta IDBlock Next'
       : 'Resposta sugerida';
   const isEmptyResult = response.status === 'AGUARDANDO' && !error;
   const emptyStateTitle = requestMode === 'invoice'
     ? 'Aguardando numero da NF'
+    : requestMode === 'occurrence'
+      ? 'Aguardando ocorrência'
     : requestMode === 'idblock-next'
       ? 'Aguardando serial do IDFace'
       : 'Aguardando dados da solicitacao';
   const emptyStateDescription = requestMode === 'invoice'
     ? 'Digite o número da nota fiscal para visualizar o PDF e baixar o arquivo.'
+    : requestMode === 'occurrence'
+      ? 'Preencha a ocorrência durante o atendimento e finalize para abrir a O.C no UNO.'
     : requestMode === 'idblock-next'
       ? 'Digite o serial do IDFace para consultar o SPOC e retornar a IDBlock Next.'
       : 'Preencha os campos do formulário para consultar o UNO e montar a resposta.';
-  const canCopyResult = requestMode !== 'invoice' && !isEmptyResult;
+  const canCopyResult = requestMode !== 'invoice' && requestMode !== 'occurrence' && !isEmptyResult;
   const isBusy = loading || openingServiceOrder;
   const shouldShowInvoicePreview = requestMode === 'invoice' && Boolean(invoiceLookup?.base64Pdf && invoicePdfUrl);
-  const shouldShowExtractedGrid = !isEmptyResult && requestMode !== 'invoice';
+  const shouldShowExtractedGrid = !isEmptyResult && requestMode !== 'invoice' && requestMode !== 'occurrence';
   const responseTone = error || response.status === 'ERRO' || response.status.includes('ERRO') || response.status === 'failed'
     ? 'error'
     : isReady
@@ -501,6 +661,8 @@ function App() {
   const busyTitle = loading
     ? requestMode === 'invoice'
       ? 'Buscando nota fiscal'
+      : requestMode === 'occurrence'
+        ? 'Abrindo ocorrência'
       : requestMode === 'idblock-next'
         ? 'Consultando SPOC'
         : 'Consultando UNO'
@@ -508,6 +670,8 @@ function App() {
   const busyDescription = loading
     ? requestMode === 'invoice'
       ? 'Aguarde enquanto o aplicativo acessa o UNO e prepara a visualização do PDF.'
+      : requestMode === 'occurrence'
+        ? 'Aguarde enquanto o aplicativo registra a O.C no UNO.'
       : requestMode === 'idblock-next'
         ? 'Aguarde enquanto o aplicativo consulta o serial no SPOC.'
         : 'Aguarde enquanto o aplicativo valida os dados e monta a resposta.'
@@ -517,10 +681,26 @@ function App() {
     : requestMode === 'parts'
       ? 'Use quando o envio de peças precisar ser liberado manualmente: força a abertura como garantia mesmo se a validação automática indicar prazo vencido.'
       : 'Use quando a manutenção precisar ser liberada manualmente: força a abertura como garantia mesmo se a validação automática indicar prazo vencido.';
+  const modeTitle = requestMode === 'maintenance'
+    ? 'Manutenção'
+    : requestMode === 'parts'
+      ? 'Envio de pecas'
+      : requestMode === 'exchange'
+        ? 'Troca'
+        : requestMode === 'occurrence'
+          ? 'Ocorrências'
+          : requestMode === 'invoice'
+            ? 'Buscar NF'
+            : 'IDBlock Next';
 
   React.useEffect(() => {
     window.localStorage.setItem(themeStorageKey, theme);
   }, [theme]);
+
+  React.useEffect(() => {
+    setOccurrenceDrafts(loadOccurrenceDrafts(unoLogin));
+    setSelectedOccurrenceDraftId(null);
+  }, [unoLogin]);
 
   React.useEffect(() => {
     function hideFloatingTooltip() {
@@ -606,6 +786,92 @@ function App() {
     if (mode !== 'idblock-next') {
       setSpocResolution(null);
     }
+
+    if (mode !== 'occurrence') {
+      setLastOccurrence(null);
+    }
+  }
+
+  function persistOccurrenceDrafts(nextDrafts: OccurrenceDraft[]) {
+    setOccurrenceDrafts(nextDrafts);
+    saveOccurrenceDrafts(unoLogin, nextDrafts);
+  }
+
+  function buildCurrentOccurrenceDraft(status: OccurrenceDraft['status'] = 'RASCUNHO', occurrenceCode?: string | null): OccurrenceDraft {
+    return {
+      id: selectedOccurrenceDraftId || createDraftId(),
+      title: occurrenceTitle.trim(),
+      description: occurrenceDescription.trim(),
+      categoryCode: occurrenceCategoryCode.trim(),
+      occurrenceTypeCode,
+      statusCode: occurrenceStatusCode,
+      costCenterCode: occurrenceCostCenterCode,
+      cnpj: cnpj.trim(),
+      status,
+      occurrenceCode,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  function handleSaveOccurrenceDraft() {
+    if (!canSaveOccurrenceDraft) {
+      return;
+    }
+
+    const draft = buildCurrentOccurrenceDraft();
+    const nextDrafts = [
+      draft,
+      ...occurrenceDrafts.filter((item) => item.id !== draft.id),
+    ];
+
+    persistOccurrenceDrafts(nextDrafts);
+    setSelectedOccurrenceDraftId(draft.id);
+    setResponse({
+      status: 'OC_RASCUNHO',
+      isHtml: false,
+      responseBody: 'Rascunho de ocorrência salvo neste navegador para o login configurado.',
+      results: [],
+    });
+  }
+
+  function handleSelectOccurrenceDraft(draft: OccurrenceDraft) {
+    setSelectedOccurrenceDraftId(draft.id);
+    setOccurrenceTitle(draft.title);
+    setOccurrenceDescription(draft.description);
+    setOccurrenceCategoryCode(draft.categoryCode);
+    setOccurrenceTypeCode(draft.occurrenceTypeCode || defaultOccurrenceTypeCode);
+    setOccurrenceStatusCode(draft.statusCode || defaultOccurrenceStatusCode);
+    setOccurrenceCostCenterCode(draft.costCenterCode || defaultOccurrenceCostCenterCode);
+    setCnpj(draft.cnpj);
+    setLastOccurrence(draft.occurrenceCode
+      ? {
+        status: 'OC_ABERTA',
+        message: `Ocorrência ${draft.occurrenceCode} aberta no UNO.`,
+        occurrenceCode: draft.occurrenceCode,
+        customerCode: null,
+        customerName: null,
+        categoryCode: draft.categoryCode,
+        title: draft.title,
+      }
+      : null);
+    setResponse({
+      status: draft.status === 'ABERTA_NO_UNO' ? 'OC_ABERTA' : draft.status === 'ERRO_AO_ABRIR' ? 'OC_ERRO' : 'OC_RASCUNHO',
+      isHtml: false,
+      responseBody: draft.status === 'ABERTA_NO_UNO'
+        ? `Ocorrência ${draft.occurrenceCode} aberta no UNO.`
+        : draft.status === 'ERRO_AO_ABRIR'
+          ? 'Este rascunho teve erro ao abrir no UNO. Revise os dados e tente novamente.'
+          : 'Rascunho carregado para edição.',
+      results: [],
+    });
+  }
+
+  function handleDeleteOccurrenceDraft(id: string) {
+    const nextDrafts = occurrenceDrafts.filter((draft) => draft.id !== id);
+    persistOccurrenceDrafts(nextDrafts);
+    if (selectedOccurrenceDraftId === id) {
+      setSelectedOccurrenceDraftId(null);
+    }
   }
 
   function handlePaneResizeStart(event: React.PointerEvent<HTMLDivElement>) {
@@ -684,6 +950,63 @@ function App() {
     setInvoiceLookup(null);
 
     try {
+      if (requestMode === 'occurrence') {
+        if (!hasOccurrenceCredentials) {
+          setResponse({
+            status: 'OC_ERRO',
+            isHtml: false,
+            responseBody: 'Configure o login e a senha do UNO antes de finalizar a ocorrência.',
+            results: [],
+          });
+          return;
+        }
+
+        const apiResponse = await fetch(`${apiBaseUrl}/api/rma/occurrence/open`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            title: occurrenceTitle,
+            description: occurrenceDescription,
+            categoryCode: occurrenceCategoryCode,
+            occurrenceTypeCode,
+            statusCode: occurrenceStatusCode,
+            costCenterCode: occurrenceCostCenterCode,
+            cnpj: cnpj.trim() || null,
+            unoLogin: unoLogin.trim() || null,
+            unoPassword: unoPassword || null,
+          }),
+        });
+
+        if (!apiResponse.ok) {
+          const body = await apiResponse.text();
+          throw new Error(body || `Erro HTTP ${apiResponse.status}`);
+        }
+
+        const occurrenceResponse = await apiResponse.json() as OccurrenceOpenResponse;
+        setLastOccurrence(occurrenceResponse);
+
+        const updatedDraft = buildCurrentOccurrenceDraft(
+          occurrenceResponse.status === 'OC_ABERTA' ? 'ABERTA_NO_UNO' : 'ERRO_AO_ABRIR',
+          occurrenceResponse.occurrenceCode,
+        );
+        const nextDrafts = [
+          updatedDraft,
+          ...occurrenceDrafts.filter((item) => item.id !== updatedDraft.id),
+        ];
+        persistOccurrenceDrafts(nextDrafts);
+        setSelectedOccurrenceDraftId(updatedDraft.id);
+
+        setResponse({
+          status: occurrenceResponse.status,
+          isHtml: false,
+          responseBody: occurrenceResponse.message,
+          results: [],
+        });
+        return;
+      }
+
       if (requestMode === 'invoice') {
         const apiResponse = await fetch(`${apiBaseUrl}/api/rma/invoice/find`, {
           method: 'POST',
@@ -908,6 +1231,14 @@ function App() {
     setMaintenanceInWarranty(false);
     setPartToSend('');
     setUnoObservations('');
+    setOccurrenceTitle('');
+    setOccurrenceDescription('');
+    setOccurrenceCategoryCode('');
+    setOccurrenceTypeCode(defaultOccurrenceTypeCode);
+    setOccurrenceStatusCode(defaultOccurrenceStatusCode);
+    setOccurrenceCostCenterCode(defaultOccurrenceCostCenterCode);
+    setSelectedOccurrenceDraftId(null);
+    setLastOccurrence(null);
     setSpocResolution(null);
     setInvoiceLookup(null);
     setResponse(emptyResponse);
@@ -1027,6 +1358,17 @@ function App() {
                 <span>Troca</span>
               </button>
               <button
+                className={requestMode === 'occurrence' ? 'mode-button active' : 'mode-button'}
+                type="button"
+                onClick={() => handleModeChange('occurrence')}
+                role="tab"
+                aria-selected={requestMode === 'occurrence'}
+                title="Ocorrências"
+              >
+                <Clipboard size={18} />
+                <span>Ocorrências</span>
+              </button>
+              <button
                 className={requestMode === 'invoice' ? 'mode-button active' : 'mode-button'}
                 type="button"
                 onClick={() => handleModeChange('invoice')}
@@ -1107,8 +1449,8 @@ function App() {
           <section className="composer" aria-label="Entrada dos dados">
             <div className="message incoming flow-card">
               <div className="message-header">
-                {requestMode === 'maintenance' ? <Wrench size={18} /> : requestMode === 'parts' ? <PackagePlus size={18} /> : requestMode === 'exchange' ? <RefreshCw size={18} /> : requestMode === 'invoice' ? <FileText size={18} /> : <Search size={18} />}
-                <span>{requestMode === 'maintenance' ? 'Manutenção' : requestMode === 'parts' ? 'Envio de pecas' : requestMode === 'exchange' ? 'Troca' : requestMode === 'invoice' ? 'Buscar NF' : 'IDBlock Next'}</span>
+                {requestMode === 'maintenance' ? <Wrench size={18} /> : requestMode === 'parts' ? <PackagePlus size={18} /> : requestMode === 'exchange' ? <RefreshCw size={18} /> : requestMode === 'occurrence' ? <Clipboard size={18} /> : requestMode === 'invoice' ? <FileText size={18} /> : <Search size={18} />}
+                <span>{modeTitle}</span>
               </div>
               <div className="serial-panel">
                 {requestMode === 'invoice' ? (
@@ -1129,11 +1471,13 @@ function App() {
                   <>
                     <FieldLabel
                       htmlFor="cnpj-input"
-                      description="Insira o CNPJ da revenda que deseja abrir a RMA na ERP"
+                      description={requestMode === 'occurrence'
+                        ? 'Insira o CNPJ do cliente da ocorrência. Se o cliente não for encontrado, a O.C será aberta no cliente padrão.'
+                        : 'Insira o CNPJ da revenda que deseja abrir a RMA na ERP'}
                       onTooltipShow={showFloatingTooltip}
                       onTooltipHide={hideFloatingTooltip}
                     >
-                      CNPJ da revenda
+                      {requestMode === 'occurrence' ? 'CNPJ do cliente' : 'CNPJ da revenda'}
                     </FieldLabel>
                     <input
                       id="cnpj-input"
@@ -1145,7 +1489,159 @@ function App() {
                     />
                   </>
                 )}
-                {requestMode === 'invoice' ? null : (
+                {requestMode === 'occurrence' ? (
+                  <>
+                    <FieldLabel
+                      htmlFor="occurrence-title"
+                      description="Informe um título curto para identificar a ocorrência no UNO."
+                      onTooltipShow={showFloatingTooltip}
+                      onTooltipHide={hideFloatingTooltip}
+                    >
+                      Título da ocorrência
+                    </FieldLabel>
+                    <input
+                      id="occurrence-title"
+                      value={occurrenceTitle}
+                      onChange={(event) => setOccurrenceTitle(event.target.value)}
+                      placeholder="Digite o título da ocorrência"
+                      spellCheck="false"
+                      aria-label="Informe o título da ocorrência"
+                    />
+                    <datalist id="occurrence-category-options">
+                      {occurrenceCategoryOptions.map((option) => (
+                        <option key={option.code} value={option.code} label={option.name}>
+                          {option.name}
+                        </option>
+                      ))}
+                    </datalist>
+                    <FieldLabel
+                      htmlFor="occurrence-category"
+                      description="Informe o código da categoria/equipamento da ocorrência no UNO."
+                      onTooltipShow={showFloatingTooltip}
+                      onTooltipHide={hideFloatingTooltip}
+                    >
+                      Código do equipamento
+                    </FieldLabel>
+                    <input
+                      id="occurrence-category"
+                      list="occurrence-category-options"
+                      value={occurrenceCategoryCode}
+                      onChange={(event) => setOccurrenceCategoryCode(event.target.value)}
+                      placeholder="Selecione ou digite o código"
+                      inputMode="numeric"
+                      spellCheck="false"
+                      aria-label="Informe o código da categoria do equipamento"
+                    />
+                    <div className="occurrence-select-grid">
+                      <div>
+                        <FieldLabel
+                          htmlFor="occurrence-type"
+                          description="Selecione o tipo da ocorrência que será registrado no UNO."
+                          onTooltipShow={showFloatingTooltip}
+                          onTooltipHide={hideFloatingTooltip}
+                        >
+                          Tipo da ocorrência
+                        </FieldLabel>
+                        <select
+                          id="occurrence-type"
+                          value={occurrenceTypeCode}
+                          onChange={(event) => setOccurrenceTypeCode(event.target.value)}
+                          aria-label="Selecione o tipo da ocorrência"
+                        >
+                          {occurrenceTypeOptions.map((option) => (
+                            <option key={option.code} value={option.code}>{option.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <FieldLabel
+                          htmlFor="occurrence-status"
+                          description="Selecione o status da ocorrência que será registrado no UNO."
+                          onTooltipShow={showFloatingTooltip}
+                          onTooltipHide={hideFloatingTooltip}
+                        >
+                          Status
+                        </FieldLabel>
+                        <select
+                          id="occurrence-status"
+                          value={occurrenceStatusCode}
+                          onChange={(event) => setOccurrenceStatusCode(event.target.value)}
+                          aria-label="Selecione o status da ocorrência"
+                        >
+                          {occurrenceStatusOptions.map((option) => (
+                            <option key={option.code} value={option.code}>{option.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <FieldLabel
+                          htmlFor="occurrence-cost-center"
+                          description="Selecione o centro de custo da ocorrência que será registrado no UNO."
+                          onTooltipShow={showFloatingTooltip}
+                          onTooltipHide={hideFloatingTooltip}
+                        >
+                          Centro de custo
+                        </FieldLabel>
+                        <select
+                          id="occurrence-cost-center"
+                          value={occurrenceCostCenterCode}
+                          onChange={(event) => setOccurrenceCostCenterCode(event.target.value)}
+                          aria-label="Selecione o centro de custo da ocorrência"
+                        >
+                          {occurrenceCostCenterOptions.map((option) => (
+                            <option key={option.code} value={option.code}>{`${option.code} - ${option.name}`}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <FieldLabel
+                      htmlFor="occurrence-description"
+                      description="Descreva a ocorrência completa para registrar no corpo da O.C."
+                      onTooltipShow={showFloatingTooltip}
+                      onTooltipHide={hideFloatingTooltip}
+                    >
+                      Corpo da ocorrência
+                    </FieldLabel>
+                    <textarea
+                      id="occurrence-description"
+                      value={occurrenceDescription}
+                      onChange={(event) => setOccurrenceDescription(event.target.value)}
+                      placeholder="Digite as informações do atendimento"
+                      spellCheck="false"
+                      aria-label="Informe o corpo da ocorrência"
+                    />
+                    <section className="occurrence-drafts" aria-label="Rascunhos de ocorrências">
+                      <div className="occurrence-drafts-header">
+                        <span>Minhas ocorrências</span>
+                        <small>{unoLogin.trim() ? `Login: ${unoLogin.trim()}` : 'Sem login configurado'}</small>
+                      </div>
+                      {!hasOccurrenceCredentials ? (
+                        <p className="occurrence-login-warning">Configure login e senha do UNO para finalizar e abrir a O.C.</p>
+                      ) : null}
+                      {occurrenceDrafts.length === 0 ? (
+                        <p>Nenhum rascunho salvo para este usuário.</p>
+                      ) : (
+                        <div className="occurrence-draft-list">
+                          {occurrenceDrafts.map((draft) => (
+                            <article
+                              key={draft.id}
+                              className={selectedOccurrenceDraftId === draft.id ? 'occurrence-draft active' : 'occurrence-draft'}
+                            >
+                              <button type="button" onClick={() => handleSelectOccurrenceDraft(draft)}>
+                                <strong>{draft.title || 'Ocorrência sem título'}</strong>
+                                <span>{draft.status === 'ABERTA_NO_UNO' ? `O.C ${draft.occurrenceCode}` : draft.status === 'ERRO_AO_ABRIR' ? 'Erro ao abrir' : 'Rascunho'}</span>
+                              </button>
+                              <button type="button" className="draft-delete-button" onClick={() => handleDeleteOccurrenceDraft(draft.id)} title="Remover rascunho">
+                                Remover
+                              </button>
+                            </article>
+                          ))}
+                        </div>
+                      )}
+                    </section>
+                  </>
+                ) : null}
+                {requestMode === 'invoice' || requestMode === 'occurrence' ? null : (
                   <FieldLabel
                     htmlFor="serial-input"
                     description={requestMode === 'idblock-next'
@@ -1157,7 +1653,7 @@ function App() {
                     {requestMode === 'idblock-next' ? 'Serial do IDFace' : 'Número de série dos equipamentos'}
                   </FieldLabel>
                 )}
-                {requestMode === 'invoice' ? null : requestMode === 'idblock-next' ? (
+                {requestMode === 'invoice' || requestMode === 'occurrence' ? null : requestMode === 'idblock-next' ? (
                   <input
                     id="serial-input"
                     value={serial}
@@ -1176,7 +1672,7 @@ function App() {
                     aria-label="Informe um ou mais numeros de serie"
                   />
                 )}
-                {requestMode !== 'idblock-next' && requestMode !== 'invoice' ? (
+                {isServiceOrderMode ? (
                   <>
                     <FieldLabel
                       htmlFor="service-order-defect"
@@ -1248,16 +1744,28 @@ function App() {
                 ) : null}
               </div>
             </div>
-            <div className="actions">
+            <div className={requestMode === 'occurrence' ? 'actions occurrence-actions' : 'actions'}>
               <button className="secondary-button" type="button" onClick={handleReset} title="Limpar">
                 <RotateCcw size={18} />
                 <span>Limpar</span>
               </button>
-              <button className="primary-button" type="button" onClick={handleGenerate} disabled={loading || !canSubmit} title="Executar">
-                {requestMode === 'idblock-next' ? <Search size={18} /> : requestMode === 'invoice' ? <FileText size={18} /> : <Send size={18} />}
+              {requestMode === 'occurrence' ? (
+                <button className="secondary-button" type="button" onClick={handleSaveOccurrenceDraft} disabled={!canSaveOccurrenceDraft} title="Salvar rascunho">
+                  <Clipboard size={18} />
+                  <span>Salvar rascunho</span>
+                </button>
+              ) : null}
+              <button
+                className="primary-button"
+                type="button"
+                onClick={handleGenerate}
+                disabled={loading || !canSubmit}
+                title={requestMode === 'occurrence' && !hasOccurrenceCredentials ? 'Configure login e senha do UNO para abrir a O.C' : 'Executar'}
+              >
+                {requestMode === 'idblock-next' ? <Search size={18} /> : requestMode === 'invoice' ? <FileText size={18} /> : requestMode === 'occurrence' ? <Clipboard size={18} /> : <Send size={18} />}
                 <span>
                   {loading
-                    ? requestMode === 'idblock-next' ? 'Consultando SPOC' : requestMode === 'invoice' ? 'Buscando NF' : 'Consultando UNO'
+                    ? requestMode === 'idblock-next' ? 'Consultando SPOC' : requestMode === 'invoice' ? 'Buscando NF' : requestMode === 'occurrence' ? 'Abrindo O.C' : 'Consultando UNO'
                     : requestMode === 'maintenance'
                       ? 'Gerar manutenção'
                       : requestMode === 'exchange'
@@ -1266,6 +1774,8 @@ function App() {
                           ? 'Abrir O.S e gerar template'
                           : requestMode === 'invoice'
                             ? 'Buscar NF'
+                            : requestMode === 'occurrence'
+                              ? 'Finalizar e abrir O.C'
                           : 'Consultar SPOC'}
                 </span>
               </button>
@@ -1337,6 +1847,26 @@ function App() {
                     <Download size={18} />
                     <span>Baixar NF</span>
                   </a>
+                </div>
+              ) : null}
+              {!isBusy && requestMode === 'occurrence' && lastOccurrence ? (
+                <div className="occurrence-result">
+                  <span>{lastOccurrence.status === 'OC_ABERTA' ? 'Ocorrência aberta no UNO' : 'Retorno da ocorrência'}</span>
+                  <strong>{lastOccurrence.occurrenceCode ? `O.C ${lastOccurrence.occurrenceCode}` : lastOccurrence.message}</strong>
+                  <dl>
+                    <div>
+                      <dt>Título</dt>
+                      <dd>{lastOccurrence.title || occurrenceTitle || '-'}</dd>
+                    </div>
+                    <div>
+                      <dt>Cliente</dt>
+                      <dd>{lastOccurrence.customerCode ? `${lastOccurrence.customerCode}${lastOccurrence.customerName ? ` - ${lastOccurrence.customerName}` : ''}` : cnpj || 'Cliente padrão se CNPJ não for encontrado'}</dd>
+                    </div>
+                    <div>
+                      <dt>Categoria</dt>
+                      <dd>{lastOccurrence.categoryCode || occurrenceCategoryCode || '-'}</dd>
+                    </div>
+                  </dl>
                 </div>
               ) : null}
               {!isBusy && response.isHtml ? (
